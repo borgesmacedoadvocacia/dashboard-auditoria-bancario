@@ -1,0 +1,1854 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<script>
+/* Central BM — o caminho normal é entrar pela central, que repassa a sessão e
+   abre o painel sem segunda digitação. Mas cada dashboard tem o seu próprio
+   cofre AES-GCM: o acesso direto continua protegido pelo cofre, não por este
+   trecho. Por isso aqui só se ajusta a moldura — nunca se bloqueia a página.
+
+   A versão anterior chamava location.replace(PORTAL) em dois casos, e os dois
+   quebravam o uso em iPad e celular:
+
+   1. Sempre que a página abria fora do iframe. Aba nova, favorito e atalho da
+      tela de início caíam na central — e o Safari, ao contrário do Chrome, não
+      copia o sessionStorage para a aba nova, então a central também pedia
+      login outra vez. Do lado de quem usa, o dashboard não abria.
+
+   2. Sempre que o sessionStorage não respondia. Com "Bloquear todos os
+      cookies" ligado, ou em navegação privada, ler o storage lança exceção; o
+      catch deixava ok=false e mandava para a central, que pelo mesmo motivo
+      não guardava sessão — laço infinito de login.
+
+   Agora, sem sessão do portal a página simplesmente mostra o próprio login. */
+(function () {
+  if (location.protocol === 'file:' ||
+      location.hostname === 'localhost' || location.hostname === '127.0.0.1') return;
+  /* Dentro da central quem oferece "Sair" é a moldura, não o painel. Ser um
+     iframe é fato do DOM e não depende de storage — que é exatamente o que
+     falha no Safari com cookies bloqueados. */
+  if (window.self !== window.top) document.documentElement.setAttribute('data-portal', '1');
+})();
+</script>
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Auditoria — Direito Bancário | Borges Macedo</title>
+<link rel="icon" type="image/png" href="favicon.png" />
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  * { -webkit-tap-highlight-color: transparent; }
+
+  :root {
+    --bg: #0f1117;
+    --bg2: #161b26;
+    --bg3: #1e2536;
+    --bg4: #232c42;
+    --azul: #2563eb;
+    --azul-claro: #3b82f6;
+    --verde: #22c55e;
+    --verde-fraco: rgba(34,197,94,0.13);
+    --vermelho: #ef4444;
+    --vermelho-fraco: rgba(239,68,68,0.13);
+    --amarelo: #f59e0b;
+    --amarelo-fraco: rgba(245,158,11,0.13);
+    --roxo: #a855f7;
+    --ciano: #06b6d4;
+    --texto: #e2e8f0;
+    --texto-muted: #64748b;
+    --borda: #1e2d4a;
+    --radius: 12px;
+    --shadow: 0 4px 24px rgba(0,0,0,0.4);
+  }
+
+  html { font-size: 15px; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--texto);
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    min-height: 100vh;
+    padding-bottom: 3rem;
+    overflow-x: hidden;
+  }
+
+  /* ===== CABEÇALHO ===== */
+  .header {
+    display: flex; align-items: center; justify-content: space-between;
+    flex-wrap: wrap; gap: 1rem;
+    padding: 1rem 1.75rem;
+    background: var(--bg2);
+    border-bottom: 1px solid var(--borda);
+    position: sticky; top: 0; z-index: 100;
+  }
+  .header-logo { display: flex; align-items: center; gap: 0.75rem; }
+  .logo-img { height: 38px; width: auto; object-fit: contain; }
+  .logo-text { display: flex; flex-direction: column; line-height: 1.2; }
+  .logo-name { font-size: 0.95rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+  .logo-sub { font-size: 0.63rem; color: var(--texto-muted); letter-spacing: 0.1em; text-transform: uppercase; }
+  .header-right { display: flex; flex-direction: column; align-items: flex-end; gap: 0.35rem; }
+  .header-updated { font-size: 0.72rem; color: var(--texto-muted); }
+  .btn-atualizar {
+    display: flex; align-items: center; gap: 0.4rem;
+    padding: 0.4rem 0.85rem; background: transparent;
+    border: 1px solid rgba(255,255,255,0.15); border-radius: 8px;
+    color: var(--texto); font-size: 0.8rem; font-weight: 500;
+    cursor: pointer; font-family: inherit; transition: background .15s, border-color .15s;
+  }
+  .btn-atualizar:hover { background: rgba(255,255,255,0.07); border-color: rgba(255,255,255,0.3); }
+
+  /* ===== LAYOUT ===== */
+  .container { max-width: 1500px; margin: 0 auto; padding: 1.5rem 1.75rem; }
+  .secao { margin-bottom: 2rem; }
+  .secao-titulo {
+    display: flex; align-items: center; gap: 0.6rem;
+    font-size: 0.95rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.06em; margin-bottom: 0.35rem;
+  }
+  .secao-titulo::before { content: ''; width: 3px; height: 17px; background: var(--azul-claro); border-radius: 2px; }
+  .secao-sub { font-size: 0.78rem; color: var(--texto-muted); margin-bottom: 1rem; margin-left: 0.9rem; }
+
+  .card {
+    background: var(--bg2); border: 1px solid var(--borda);
+    border-radius: var(--radius); padding: 1.15rem; box-shadow: var(--shadow);
+  }
+
+  /* ===== KPIs ===== */
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 0.9rem; }
+  .kpi { position: relative; overflow: hidden; }
+  .kpi::after { content:''; position:absolute; left:0; top:0; bottom:0; width:3px; background: var(--azul-claro); }
+  .kpi.verde::after { background: var(--verde); }
+  .kpi.vermelho::after { background: var(--vermelho); }
+  .kpi.amarelo::after { background: var(--amarelo); }
+  .kpi.roxo::after { background: var(--roxo); }
+  .kpi-topo { display:flex; align-items:center; justify-content:space-between; gap:.5rem; margin-bottom:.55rem; }
+  .kpi-nome { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.07em; color: var(--texto-muted); font-weight: 700; }
+  .kpi-pct {
+    font-size: 0.72rem; font-weight: 800; padding: 0.15rem 0.45rem; border-radius: 6px; white-space: nowrap;
+  }
+  .kpi-pct.verde { background: var(--verde-fraco); color: var(--verde); }
+  .kpi-pct.vermelho { background: var(--vermelho-fraco); color: var(--vermelho); }
+  .kpi-pct.amarelo { background: var(--amarelo-fraco); color: var(--amarelo); }
+  .kpi-pct.neutro { background: var(--bg3); color: var(--texto-muted); }
+  .kpi-valor { font-size: 1.55rem; font-weight: 800; letter-spacing: -0.02em; line-height: 1.15; }
+  .kpi-rodape { margin-top: 0.6rem; padding-top: 0.55rem; border-top: 1px solid var(--borda); font-size: 0.75rem; color: var(--texto-muted); display:flex; flex-direction:column; gap:.2rem; }
+  .kpi-rodape span b { color: var(--texto); font-weight: 600; }
+
+  /* ===== BARRA DE PROGRESSO ===== */
+  .barra-fundo { height: 6px; background: var(--bg3); border-radius: 3px; overflow: hidden; margin-top: .5rem; }
+  .barra-fill { height: 100%; border-radius: 3px; transition: width .4s ease; }
+
+  /* ===== TABELAS ===== */
+  .tabela-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.83rem; min-width: 640px; }
+  thead th {
+    text-align: right; padding: 0.6rem 0.7rem; font-size: 0.67rem; text-transform: uppercase;
+    letter-spacing: 0.06em; color: var(--texto-muted); font-weight: 700;
+    border-bottom: 1px solid var(--borda); white-space: nowrap; background: var(--bg2);
+    position: sticky; top: 0;
+  }
+  thead th:first-child { text-align: left; }
+  tbody td { padding: 0.55rem 0.7rem; text-align: right; border-bottom: 1px solid rgba(30,45,74,0.5); white-space: nowrap; }
+  tbody td:first-child { text-align: left; white-space: normal; }
+  tbody tr.destaque { background: rgba(255,255,255,0.04); }
+  tbody tr.destaque td { font-weight: 800; border-top: 1px solid var(--borda); }
+  .tag-pct { font-weight: 800; padding: 0.1rem 0.5rem; border-radius: 5px; font-size: 0.76rem; display:inline-block; }
+  .tag-pct.verde { background: var(--verde-fraco); color: var(--verde); }
+  .tag-pct.vermelho { background: var(--vermelho-fraco); color: var(--vermelho); }
+  .tag-pct.amarelo { background: var(--amarelo-fraco); color: var(--amarelo); }
+  .tag-pct.neutro { background: var(--bg3); color: var(--texto-muted); }
+  .val-neg { color: var(--vermelho); font-weight: 600; }
+  .val-pos { color: var(--verde); font-weight: 600; }
+
+  /* ===== FILTROS (CHIPS) ===== */
+  .filtros { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; margin-bottom: 0.9rem; }
+  .filtros .sep { width: 1px; align-self: stretch; background: var(--borda); margin: 0 0.35rem; }
+  .chip {
+    background: var(--bg3); border: 1px solid var(--borda); border-radius: 999px;
+    color: var(--texto-muted); font-size: 0.74rem; font-weight: 600; font-family: inherit;
+    padding: 0.3rem 0.75rem; cursor: pointer; transition: all .15s; white-space: nowrap;
+  }
+  .chip:hover { color: var(--texto); border-color: rgba(255,255,255,0.25); }
+  .chip.ativo { background: var(--azul); border-color: var(--azul); color: #fff; }
+  .tag-aba {
+    display: inline-block; padding: 0.12rem 0.5rem; border-radius: 5px;
+    font-size: 0.7rem; font-weight: 700; white-space: nowrap;
+  }
+
+  /* ===== GRÁFICOS ===== */
+  .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(370px, 1fr)); gap: 1rem; }
+  .grafico-box { position: relative; width: 100%; }
+  .grafico-box.alto { height: 360px; }
+  .grafico-box.medio { height: 300px; }
+
+  /* ===== RESUMO POR ABA ===== */
+  .resumo-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.9rem; margin-bottom: 1rem; }
+  .resumo-item { background: var(--bg3); border: 1px solid var(--borda); border-radius: 10px; padding: 0.9rem; }
+  .resumo-nome { font-size: 0.67rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--texto-muted); font-weight: 700; margin-bottom: 0.35rem; }
+  .resumo-valor { font-size: 1.25rem; font-weight: 800; letter-spacing: -0.02em; }
+  .resumo-nota { font-size: 0.71rem; color: var(--texto-muted); margin-top: 0.25rem; }
+
+  /* ===== OBSERVAÇÕES ===== */
+  .obs-lista { display: flex; flex-direction: column; gap: 0.6rem; }
+  .obs {
+    display: flex; gap: 0.75rem; padding: 0.8rem 0.95rem;
+    background: var(--bg3); border-radius: 10px;
+    border-left: 3px solid var(--texto-muted);
+  }
+  .obs.critico { border-left-color: var(--vermelho); background: rgba(239,68,68,0.07); }
+  .obs.atencao { border-left-color: var(--amarelo); background: rgba(245,158,11,0.06); }
+  .obs.bom { border-left-color: var(--verde); background: rgba(34,197,94,0.06); }
+  .obs.info { border-left-color: var(--azul-claro); }
+  .obs-icone { font-size: 1rem; line-height: 1.35; flex-shrink: 0; }
+  .obs-corpo { flex: 1; min-width: 0; }
+  .obs-titulo { font-size: 0.85rem; font-weight: 700; margin-bottom: 0.15rem; }
+  .obs-texto { font-size: 0.8rem; color: var(--texto-muted); line-height: 1.5; }
+  .obs-texto b { color: var(--texto); font-weight: 600; }
+  .obs-vazio { padding: 1.5rem; text-align: center; color: var(--texto-muted); font-size: 0.85rem; }
+
+  /* ===== ESTADOS ===== */
+  .estado { padding: 3rem 1.5rem; text-align: center; color: var(--texto-muted); }
+  .spinner {
+    width: 34px; height: 34px; margin: 0 auto 1rem;
+    border: 3px solid var(--bg3); border-top-color: var(--azul-claro);
+    border-radius: 50%; animation: girar .8s linear infinite;
+  }
+  @keyframes girar { to { transform: rotate(360deg); } }
+  .erro-box {
+    background: rgba(239,68,68,0.1); border: 1px solid var(--vermelho);
+    border-radius: var(--radius); padding: 1rem; margin: 1rem 1.75rem;
+    color: #fca5a5; font-size: 0.85rem; line-height: 1.5;
+  }
+  .oculto { display: none !important; }
+
+  .rodape { text-align: center; font-size: 0.72rem; color: var(--texto-muted); padding: 1.5rem; line-height: 1.7; }
+  .rodape a { color: var(--azul-claro); text-decoration: none; }
+
+  /* ===== TELA DE LOGIN ===== */
+  .login-overlay {
+    position: fixed; inset: 0; z-index: 1000;
+    background: radial-gradient(circle at 50% 0%, #1a2338 0%, var(--bg) 62%);
+    display: flex; align-items: center; justify-content: center; padding: 1.25rem;
+  }
+  .login-caixa {
+    width: 100%; max-width: 372px;
+    background: var(--bg2); border: 1px solid var(--borda);
+    border-radius: 16px; padding: 2rem 1.75rem;
+    box-shadow: 0 18px 60px rgba(0,0,0,0.55);
+  }
+  .login-logo { display: block; height: 46px; margin: 0 auto 1.15rem; object-fit: contain; }
+  .login-titulo { text-align: center; font-size: 1.02rem; font-weight: 700; letter-spacing: 0.02em; }
+  .login-sub {
+    text-align: center; font-size: 0.72rem; color: var(--texto-muted);
+    text-transform: uppercase; letter-spacing: 0.1em; margin-top: 0.25rem; margin-bottom: 1.6rem;
+  }
+  .campo-grupo { margin-bottom: 0.9rem; }
+  .campo-rotulo {
+    display: block; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--texto-muted); font-weight: 700; margin-bottom: 0.35rem;
+  }
+  .campo-texto {
+    width: 100%; background: var(--bg3); border: 1px solid var(--borda);
+    color: var(--texto); border-radius: 9px; padding: 0.68rem 0.85rem;
+    font-size: 0.92rem; font-family: inherit; outline: none; transition: border-color .15s;
+  }
+  .campo-texto:focus { border-color: var(--azul-claro); }
+  .campo-texto::placeholder { color: #47536b; }
+  .btn-entrar {
+    width: 100%; margin-top: 0.5rem; padding: 0.72rem;
+    background: var(--azul); border: none; border-radius: 9px;
+    color: #fff; font-size: 0.92rem; font-weight: 700; font-family: inherit;
+    cursor: pointer; transition: background .15s;
+  }
+  .btn-entrar:hover:not(:disabled) { background: var(--azul-claro); }
+  .btn-entrar:disabled { opacity: 0.6; cursor: default; }
+  .login-erro {
+    margin-top: 0.9rem; padding: 0.6rem 0.75rem; border-radius: 8px;
+    background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.45);
+    color: #fca5a5; font-size: 0.79rem; line-height: 1.45; text-align: center;
+  }
+  .login-rodape {
+    margin-top: 1.35rem; padding-top: 1rem; border-top: 1px solid var(--borda);
+    font-size: 0.7rem; color: var(--texto-muted); text-align: center; line-height: 1.55;
+  }
+  .btn-sair {
+    background: transparent; border: 1px solid rgba(255,255,255,0.15); border-radius: 8px;
+    color: var(--texto-muted); font-size: 0.75rem; font-family: inherit;
+    padding: 0.3rem 0.6rem; cursor: pointer; transition: all .15s;
+  }
+  .btn-sair:hover { color: var(--vermelho); border-color: var(--vermelho); }
+  /* Dentro da central o encerramento de sessão é feito pela própria central */
+  html[data-portal] .btn-sair { display: none; }
+
+  @media (max-width: 720px) {
+    html { font-size: 14px; }
+    .header { padding: 0.85rem 1rem; }
+    .container { padding: 1.1rem 1rem; }
+    .kpi-valor { font-size: 1.3rem; }
+    .grafico-box.alto { height: 300px; }
+    .grafico-box.medio { height: 260px; }
+  }
+
+  /* ===== BUSCA ===== */
+  .busca-wrap { position: relative; flex: 1 1 260px; min-width: 220px; max-width: 420px; }
+  .busca {
+    width: 100%; background: var(--bg3); border: 1px solid var(--borda); color: var(--texto);
+    border-radius: 9px; padding: 0.5rem 2rem 0.5rem 2rem; font-size: 0.85rem;
+    font-family: inherit; outline: none; transition: border-color .15s;
+  }
+  .busca:focus { border-color: var(--azul-claro); }
+  .busca::placeholder { color: #47536b; }
+  .busca-icone {
+    position: absolute; left: 0.6rem; top: 50%; transform: translateY(-50%);
+    color: var(--texto-muted); font-size: 0.85rem; pointer-events: none;
+  }
+  .busca-limpar {
+    position: absolute; right: 0.45rem; top: 50%; transform: translateY(-50%);
+    background: transparent; border: none; color: var(--texto-muted);
+    font-size: 1rem; cursor: pointer; padding: 0 .2rem; line-height: 1; font-family: inherit;
+  }
+  .busca-limpar:hover { color: var(--vermelho); }
+
+  /* ===== LINHAS CLICÁVEIS ===== */
+  tbody tr.clicavel { cursor: pointer; transition: background .12s; }
+  tbody tr.clicavel:hover { background: rgba(59,130,246,0.10); }
+  tbody tr.clicavel:hover td:first-child { box-shadow: inset 3px 0 0 var(--azul-claro); }
+  .dica-clique {
+    font-size: 0.72rem; color: var(--texto-muted); margin-left: auto;
+    display: inline-flex; align-items: center; gap: .3rem; white-space: nowrap;
+  }
+
+  /* ===== MODAL DE DETALHE ===== */
+  .modal-fundo {
+    position: fixed; inset: 0; z-index: 900;
+    background: rgba(5,8,15,0.72); backdrop-filter: blur(2px);
+    display: flex; align-items: center; justify-content: center; padding: 1.25rem;
+    opacity: 0; transition: opacity .16s;
+  }
+  .modal-fundo.aberto { opacity: 1; }
+  .modal {
+    width: 100%; max-width: 660px; max-height: 88vh; overflow-y: auto;
+    background: var(--bg2); border: 1px solid var(--borda); border-radius: 14px;
+    box-shadow: 0 24px 70px rgba(0,0,0,0.6);
+    transform: translateY(8px); transition: transform .16s;
+  }
+  .modal-fundo.aberto .modal { transform: translateY(0); }
+  .modal::-webkit-scrollbar { width: 9px; }
+  .modal::-webkit-scrollbar-thumb { background: var(--bg4); border-radius: 5px; }
+  .modal-topo {
+    display: flex; align-items: flex-start; gap: 1rem;
+    padding: 1.15rem 1.35rem 0.9rem; border-bottom: 1px solid var(--borda);
+    position: sticky; top: 0; background: var(--bg2); z-index: 2;
+    border-radius: 14px 14px 0 0;
+  }
+  .modal-titulo { font-size: 1.02rem; font-weight: 800; line-height: 1.3; letter-spacing: -0.01em; }
+  .modal-sub { font-size: 0.78rem; color: var(--texto-muted); margin-top: 0.2rem; line-height: 1.45; }
+  .modal-fechar {
+    margin-left: auto; flex-shrink: 0; background: transparent;
+    border: 1px solid rgba(255,255,255,0.15); border-radius: 8px;
+    color: var(--texto-muted); font-size: 1.05rem; line-height: 1;
+    padding: 0.32rem 0.55rem; cursor: pointer; font-family: inherit; transition: all .15s;
+  }
+  .modal-fechar:hover { color: var(--vermelho); border-color: var(--vermelho); }
+  .modal-corpo { padding: 1.1rem 1.35rem 1.35rem; }
+  .modal-bloco { margin-bottom: 1.15rem; }
+  .modal-bloco:last-child { margin-bottom: 0; }
+  .modal-bloco-titulo {
+    font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.1em;
+    color: var(--texto-muted); font-weight: 700; margin-bottom: 0.5rem;
+    padding-bottom: 0.3rem; border-bottom: 1px solid var(--borda);
+  }
+  .modal-campos { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.7rem 1.1rem; }
+  .modal-campo { min-width: 0; }
+  .modal-campo.largo { grid-column: 1 / -1; }
+  .modal-rotulo {
+    font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.07em;
+    color: var(--texto-muted); font-weight: 700; margin-bottom: 0.15rem;
+  }
+  .modal-valor { font-size: 0.9rem; font-weight: 600; word-break: break-word; line-height: 1.45; }
+  .modal-valor.grande { font-size: 1.15rem; font-weight: 800; letter-spacing: -0.02em; }
+  .modal-valor.muted { color: var(--texto-muted); font-weight: 500; }
+  .modal-valor.texto { font-weight: 500; white-space: pre-wrap; font-size: 0.85rem; }
+  .modal-nota {
+    margin-top: 0.9rem; padding: 0.7rem 0.85rem; border-radius: 9px;
+    background: var(--bg3); border-left: 3px solid var(--azul-claro);
+    font-size: 0.8rem; color: var(--texto-muted); line-height: 1.55;
+  }
+  .modal-nota.alerta { border-left-color: var(--amarelo); background: rgba(245,158,11,0.07); }
+  .modal-nota.critico { border-left-color: var(--vermelho); background: rgba(239,68,68,0.07); }
+  .modal-nota b { color: var(--texto); }
+  .modal-acoes { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 1.1rem; }
+  .modal-acao {
+    display: inline-flex; align-items: center; gap: 0.35rem;
+    padding: 0.45rem 0.8rem; border-radius: 8px; text-decoration: none;
+    background: var(--bg3); border: 1px solid var(--borda);
+    color: var(--texto); font-size: 0.8rem; font-weight: 600;
+    font-family: inherit; cursor: pointer; transition: all .15s;
+  }
+  .modal-acao:hover { border-color: var(--azul-claro); color: #fff; }
+
+  @media (max-width: 720px) {
+    .modal { max-height: 92vh; }
+    .modal-campos { grid-template-columns: 1fr; }
+  }
+
+  /* ===== CARTÃO KPI CLICÁVEL ===== */
+  .kpi-clicavel { cursor: pointer; transition: background .14s, border-color .14s, transform .14s; }
+  .kpi-clicavel:hover {
+    background: var(--bg3); border-color: rgba(59,130,246,.4); transform: translateY(-2px);
+  }
+  .kpi-clicavel::before {
+    content: '\21F2'; position: absolute; right: .6rem; bottom: .5rem;
+    font-size: .8rem; color: var(--texto-muted); opacity: 0; transition: opacity .14s;
+  }
+  .kpi-clicavel:hover::before { opacity: .85; }
+
+  /* ===== TABELA DENTRO DO MODAL ===== */
+  .modal-tabela-wrap { overflow-x: auto; border: 1px solid var(--borda); border-radius: 10px; }
+  .modal-tabela { width: 100%; border-collapse: collapse; font-size: .81rem; min-width: 420px; }
+  .modal-tabela thead th {
+    position: sticky; top: 0; background: var(--bg3);
+    text-align: left; padding: .55rem .7rem; font-size: .64rem;
+    text-transform: uppercase; letter-spacing: .06em; color: var(--texto-muted);
+    font-weight: 700; white-space: nowrap; border-bottom: 1px solid var(--borda);
+  }
+  .modal-tabela thead th.dir, .modal-tabela td.dir { text-align: right; }
+  .modal-tabela tbody td {
+    padding: .5rem .7rem; border-bottom: 1px solid rgba(30,45,74,.5);
+    vertical-align: top; line-height: 1.45;
+  }
+  .modal-tabela tbody tr:last-child td { border-bottom: none; }
+  .modal-tabela tbody tr:hover { background: rgba(255,255,255,.03); }
+  .modal-lista-nota { font-size: .74rem; color: var(--texto-muted); margin-top: .55rem; }
+  .modal-lista-total {
+    margin-top: .8rem; padding: .7rem .9rem; border-radius: 9px;
+    background: var(--bg3); border: 1px solid var(--borda);
+    font-size: .85rem; font-weight: 600;
+  }
+  .modal-lista-total b { color: var(--azul-claro); }
+  .resumo-item.item-clicavel { cursor: pointer; transition: background .14s, border-color .14s; }
+  .resumo-item.item-clicavel:hover { background: var(--bg4); border-color: rgba(59,130,246,.4); }
+  /* ── filtros ── */
+  .filtro-linha { display:flex; gap:.7rem; align-items:flex-start; flex-wrap:wrap; margin-bottom:.4rem; }
+  .filtro-rotulo { font-size:.7rem; text-transform:uppercase; letter-spacing:.07em; color:var(--texto-muted); min-width:62px; padding-top:.5rem; }
+  .filtro-campo { display:flex; align-items:center; gap:.4rem; font-size:.76rem; color:var(--texto-muted); }
+  .filtro-campo .campo-texto { width:auto; min-width:150px; max-width:260px; padding:.35rem .5rem; font-size:.8rem; }
+  .btn-sec { padding:.45rem .8rem; border-radius:8px; border:1px solid var(--borda); background:var(--card); color:var(--texto); cursor:pointer; font-size:.8rem; font-family:inherit; }
+  .btn-sec:hover { border-color:var(--azul-claro); }
+  .btn-mini { margin-left:.6rem; padding:.2rem .55rem; border-radius:6px; border:1px solid var(--borda); background:var(--bg3); color:var(--texto); cursor:pointer; font-size:.72rem; font-family:inherit; }
+  .btn-mini:hover { border-color:var(--azul-claro); }
+  .nota-regra { border-left:3px solid var(--azul-claro); padding-left:.7rem; }
+  .mono { font-family: ui-monospace, Consolas, monospace; font-size:.92em; letter-spacing:-.01em; white-space:nowrap; }
+  .sub { color:var(--texto-muted); font-size:.88em; }
+  /* ── painel (seções de KPI) ── */
+  .sec-kpi { margin-top:1.1rem; font-size:.78rem; }
+  .sec-kpi:first-child { margin-top:0; }
+  .kpis-sec { grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
+  .kpis-sec .kpi { padding:.85rem 1rem .8rem; }
+  .kpis-sec .kpi-nome { font-size:.7rem; line-height:1.3; }
+  .kpis-sec .kpi-valor { font-size:1.55rem; margin:.25rem 0 .2rem; }
+  .kpi-rodape { display:flex; flex-direction:column; gap:.15rem; }
+  .kpi-rodape .acao { color:var(--texto-muted); font-size:.7rem; line-height:1.35; }
+  .kpi-rodape .alerta { color:var(--amarelo); font-size:.7rem; }
+  /* ── blocos recolhíveis ── */
+  details.bloco { border:1px solid var(--borda); border-radius:10px; background:var(--bg2); margin-bottom:.6rem; }
+  details.bloco summary { cursor:pointer; padding:.65rem .9rem; display:flex; align-items:center; gap:.6rem; font-weight:700; font-size:.82rem; list-style:none; }
+  details.bloco summary::-webkit-details-marker { display:none; }
+  details.bloco summary::before { content:'\25B8'; color:var(--texto-muted); transition:transform .15s; }
+  details.bloco[open] summary::before { transform:rotate(90deg); }
+  details.bloco .tabela-wrap { padding:0 .6rem .6rem; }
+  details.bloco .obs-vazio { margin:0 .9rem .8rem; }
+  /* ── tabelas compactas ── */
+  table.compacta { font-size:.76rem; min-width:900px; }
+  table.compacta th { font-size:.62rem; }
+  table.compacta td { padding:.4rem .55rem; vertical-align:top; line-height:1.4; max-width:340px; }
+  tr.vencido td { background:rgba(239,68,68,.08); }
+  td.prio-urgente { color:var(--vermelho); font-weight:800; }
+  td.prio-alta { color:var(--amarelo); font-weight:700; }
+  td.prio-media { color:var(--azul-claro); font-weight:600; }
+  td.prio-baixa { color:var(--texto-muted); }
+  /* ── modal ── */
+  .modal { max-width: 1180px; }
+  .modal-acoes-inline { display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; }
+  .modal-acoes-inline .sub { margin-left:auto; }
+  /* ── impressão ── */
+  @media print {
+    body { background:#fff; color:#111; }
+    .no-print, .header .header-right, .rodape, .modal-fundo, .dica-clique { display:none !important; }
+    .card, details.bloco { border:1px solid #ccc; background:#fff; box-shadow:none; break-inside:avoid; }
+    .kpi-valor, .kpi-nome, .secao-titulo, .resumo-valor { color:#111 !important; }
+    .kpi-rodape .acao, .secao-sub, .sub { color:#444 !important; }
+    details.bloco { page-break-inside:avoid; }
+    details.bloco:not([open]) { display:block; }
+    details.bloco:not([open]) > *:not(summary) { display:none; }
+    .grafico-box { height:220px; }
+    table { font-size:.68rem; }
+    th { color:#333 !important; background:#eee !important; }
+  }
+
+</style>
+</head>
+<body>
+
+<div class="login-overlay" id="loginOverlay">
+  <form class="login-caixa" id="loginForm" autocomplete="on">
+    <img src="logo.png" alt="Borges Macedo Advocacia" class="login-logo" onerror="this.style.display='none'" />
+    <div class="login-titulo">Auditoria — Direito Bancário</div>
+    <div class="login-sub">Acesso restrito</div>
+
+    <div class="campo-grupo">
+      <label class="campo-rotulo" for="campoUsuario">Login</label>
+      <input class="campo-texto" type="text" id="campoUsuario" name="username"
+             autocomplete="username" placeholder="Usuário" required />
+    </div>
+    <div class="campo-grupo">
+      <label class="campo-rotulo" for="campoSenha">Senha</label>
+      <input class="campo-texto" type="password" id="campoSenha" name="password"
+             autocomplete="current-password" placeholder="••••••••" required />
+    </div>
+
+    <button type="submit" class="btn-entrar" id="btnEntrar">Entrar</button>
+    <div class="login-erro oculto" id="loginErro"></div>
+
+    <div class="login-rodape">
+      Painel exclusivo das lideranças.<br />
+      A sessão termina ao fechar a aba.
+    </div>
+  </form>
+</div>
+
+<header class="header oculto" id="cabecalho">
+  <div class="header-logo">
+    <img src="logo.png" alt="Borges Macedo Advocacia" class="logo-img" onerror="this.style.display='none'" />
+    <div class="logo-text">
+      <span class="logo-name">Auditoria — Direito Bancário</span>
+      <span class="logo-sub">Borges Macedo Advocacia · Auditoria completa da carteira de Direito Bancário</span>
+    </div>
+  </div>
+  <div class="header-right">
+    <div style="display:flex;gap:.4rem;align-items:center">
+      <button class="btn-atualizar" id="btnAtualizar">&#10227; Atualizar</button>
+      <button class="btn-sair" id="btnSair" title="Encerrar a sessão">Sair</button>
+    </div>
+    <span class="header-updated" id="atualizadoEm">—</span>
+  </div>
+</header>
+
+<div id="erroBox" class="erro-box oculto"></div>
+
+<div id="carregando" class="estado oculto">
+  <div class="spinner"></div>
+  Carregando dados da planilha…
+</div>
+
+<main class="container oculto" id="conteudo">
+  <section class="secao no-print">
+    <div class="filtro-linha">
+      <span class="filtro-rotulo">Recorte</span>
+      <div class="filtros" id="filtrosDims"></div>
+    </div>
+    <div class="filtro-linha">
+      <span class="filtro-rotulo">Buscar</span>
+      <div class="filtros" style="align-items:center">
+        <span id="buscaBox"></span>
+        <button type="button" class="chip" id="btnLimpar">&#10005; Limpar filtros</button>
+        <div class="sep"></div>
+        <button type="button" class="btn-sec" id="btnXlsx" title="Painel, prioridades, plano de ação e a auditoria do recorte, em abas">&#11015; Relatório completo (XLSX)</button>
+        <button type="button" class="btn-sec" id="btnCsvPainel" title="Só os indicadores do painel">&#11015; Painel (CSV)</button>
+        <button type="button" class="btn-sec" id="btnImprimir" title="Imprimir ou salvar em PDF">&#128438; Imprimir / PDF</button>
+      </div>
+    </div>
+    <div class="secao-sub" id="subFiltro">&mdash;</div>
+    <div class="secao-sub nota-regra">Os indicadores são os da aba <b>Painel</b> da planilha, recalculados aqui a partir das fórmulas originais sobre a aba <b>Auditoria</b>.
+      Por isso cada cartão abre a lista exata dos processos que compõem o número, e todos respeitam o recorte escolhido acima. Clique num processo em qualquer lista para ver a ficha completa da auditoria.</div>
+  </section>
+
+  <section class="secao">
+    <div class="secao-titulo">Painel da carteira</div>
+    <div id="painel"></div>
+  </section>
+
+  <section class="secao">
+    <div class="secao-titulo">Pontos de atenção</div>
+    <div class="obs-lista" id="obsLista"></div>
+  </section>
+
+  <section class="secao">
+    <div class="secao-titulo">Prioridades por processo (aba Painel - detalhe)</div>
+    <div class="secao-sub">Blocos gerados a cada rodada de auditoria: o que fazer, prazo, responsável e prioridade. Cada bloco pode ser exportado separadamente.</div>
+    <div id="prioridades"></div>
+  </section>
+
+  <section class="secao">
+    <div class="secao-titulo">Plano de ação</div>
+    <div class="filtro-linha">
+      <div class="filtros" id="filtrosPlano">
+        <button type="button" class="chip ativo" data-plano="abertos" data-rotulo="Abertos">Abertos</button>
+        <button type="button" class="chip" data-plano="urgentes" data-rotulo="Urgentes">Urgentes</button>
+        <button type="button" class="chip" data-plano="vencidos" data-rotulo="Prazo vencido">Prazo vencido</button>
+        <button type="button" class="chip" data-plano="concluidos" data-rotulo="Concluídos">Concluídos</button>
+        <button type="button" class="chip" data-plano="todos" data-rotulo="Todos">Todos</button>
+        <div class="sep"></div>
+        <button type="button" class="btn-sec" id="btnXlsxPlano">&#11015; XLSX</button>
+      </div>
+    </div>
+    <div class="secao-sub" id="subPlano">&mdash;</div>
+    <div class="card">
+      <div class="tabela-wrap">
+        <table class="compacta" id="tabelaPlano">
+          <thead><tr id="cabPlano"></tr></thead>
+          <tbody id="corpoPlano"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="secao oculto" id="secAguardando">
+    <div class="secao-titulo">Aguardando gatilho</div>
+    <div class="filtro-linha"><div class="filtros"><span class="secao-sub" id="subAguardando" style="margin:0">&mdash;</span><div class="sep"></div><button type="button" class="btn-sec" id="btnXlsxAguardando">&#11015; XLSX</button></div></div>
+    <div class="card">
+      <div class="tabela-wrap">
+        <table class="compacta" id="tabelaAguardando">
+          <thead><tr id="cabAguardando"></tr></thead>
+          <tbody id="corpoAguardando"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="secao">
+    <div class="grid-2">
+      <div class="card">
+        <div class="secao-sub" style="margin:0 0 .6rem 0">Processos por fase atual</div>
+        <div class="grafico-box alto"><canvas id="grafFase"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="secao-sub" style="margin:0 0 .6rem 0" id="tituloGrafEntidade">Processos e probabilidade média por parte contrária</div>
+        <div class="grafico-box alto"><canvas id="grafEntidade"></canvas></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="secao">
+    <div class="secao-titulo">Carteira auditada</div>
+    <div class="filtro-linha"><div class="filtros"><span class="secao-sub" id="subCarteira" style="margin:0">&mdash;</span><div class="sep"></div><button type="button" class="btn-sec" id="btnXlsxCarteira" title="Todas as colunas da aba Auditoria para os processos do recorte">&#11015; Auditoria do recorte (XLSX)</button></div></div>
+    <div class="card">
+      <div class="tabela-wrap">
+        <table class="compacta" id="tabelaCarteira">
+          <thead><tr id="cabCarteira"></tr></thead>
+          <tbody id="corpoCarteira"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="rodape">
+  Borges Macedo Advocacia · Auditoria completa da carteira de Direito Bancário · Atualização automática a cada 5 min<br />
+  <a href="#" id="linkPlanilha" target="_blank" rel="noopener">Abrir planilha no Google Sheets</a>
+</footer>
+
+<script>
+/* =========================================================================
+   COFRES — {SHEET_ID, GOOGLE_API_KEY} cifrados com AES-256-GCM, um cofre por
+   perfil autorizado. Este painel é exclusivo das lideranças: só os perfis
+   Administração e Lideranças têm cofre aqui. Sem a credencial correta a
+   decifragem falha e a página não sabe qual planilha ler.
+   ========================================================================= */
+const COFRES = [
+/* Administração */
+  {"v":1,"it":310000,"salt":"1DePu7FmBz4raUM3bQew5w==","iv":"rt1Yg99ZXmszDuYe","ct":"LGLCG7p+leSGmTBkNPuuByNzodUbhPDcWq0ptqueRUw+RXT/p3m+OCBLXs9YgsRVT6QLD0wfPLZgO2a+oh+dgItn/0MITZOtx1QBMcbUpmAbxhf5sAxx1NhsMl77tWjzf5HT4Wy+iIZCd3VTeBCUQd7xNaExEDiUkNousf2RegYoFvKDdFo="},
+  /* Lideranças */
+  {"v":1,"it":310000,"salt":"qNSKu3oEFs/zWcFW9Q3WBg==","iv":"3nOKeFmiqOUhs4Nw","ct":"fOl2kS4GPKB9rkBfzdlyIQniHMf3SFBfOyWzCUaOeYr3eWybH529XtRgpMkoVPkH8axk64e//MIXiBq37lZz718tY5N08lhiQCCzAiXAjee+TI2tMdu9z/CyyfsqSp4dZRV9LishoXXToGMKoxUQhASB65U/7TMf7v6gZot0cQV9slteCTc="}
+];
+
+const b64bytes = b64 => Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+const normUsuario = u => u.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+async function abrirUmCofre(cofre, usuario, senha) {
+  const enc = new TextEncoder();
+  const material = await crypto.subtle.importKey(
+    'raw', enc.encode(normUsuario(usuario) + '\n' + senha), 'PBKDF2', false, ['deriveKey']);
+  const chave = await crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt: b64bytes(cofre.salt), iterations: cofre.it, hash: 'SHA-256' },
+    material, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+  const claro = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: b64bytes(cofre.iv) }, chave, b64bytes(cofre.ct));
+  return JSON.parse(new TextDecoder().decode(claro));
+}
+
+async function abrirCofre(usuario, senha) {
+  for (const cofre of COFRES) {
+    try { return await abrirUmCofre(cofre, usuario, senha); } catch (e) {}
+  }
+  throw new Error('credenciais sem acesso a este painel');
+}
+
+const CONFIG = { SHEET_ID: null, GOOGLE_API_KEY: null, AUTO_REFRESH_MIN: 5 };
+
+/* ===== utilitários comuns ===== */
+const fmtBRL = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' });
+const fmtBRL0 = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL', maximumFractionDigits: 0 });
+const fmtNum = new Intl.NumberFormat('pt-BR');
+function moeda(v) { return fmtBRL.format(v || 0); }
+function moedaCurta(v) { return fmtBRL0.format(v || 0); }
+function num(v) { return fmtNum.format(v || 0); }
+function pct1(v) { return (v === null || !isFinite(v)) ? '—' : v.toFixed(1).replace('.', ',') + '%'; }
+function pct0(v) { return (v === null || !isFinite(v)) ? '—' : Math.round(v) + '%'; }
+
+function parseNumBR(v) {
+  if (typeof v === 'number') return isFinite(v) ? v : 0;
+  if (v === null || v === undefined) return 0;
+  let t = String(v).replace(/\u00a0/g, ' ').trim();
+  if (t === '' || t === '-') return 0;
+  t = t.replace(/R\$/gi, '').replace(/\s/g, '');
+  if (t === '' || t === '-') return 0;
+  const negativo = t.startsWith('-') || /^\(.*\)$/.test(t);
+  t = t.replace(/[()\-+]/g, '');
+  t = t.replace(/\./g, '').replace(',', '.');
+  const n = parseFloat(t);
+  if (!isFinite(n)) return 0;
+  return negativo ? -n : n;
+}
+
+/** dd/mm/aaaa -> Date. Datas-fantasma do Sheets (1899/1900) contam como vazio. */
+function parseDataBR(v) {
+  if (!v) return null;
+  const m = String(v).trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (!m) return null;
+  let ano = Number(m[3]);
+  if (ano < 100) ano += 2000;
+  if (ano < 1950) return null;
+  const dt = new Date(ano, Number(m[2]) - 1, Number(m[1]));
+  return isNaN(dt.getTime()) ? null : dt;
+}
+
+const MESES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
+const MESES_CURTO = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+const MESES_NORM = MESES.map(m => m.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase());
+
+/** "Agosto/25", "Agosto/2025" -> {ano, mes}. "Dezembro/99" = vazio. */
+function parseMesRotulo(v) {
+  if (!v) return null;
+  const t = String(v).trim();
+  const m = t.match(/^([A-Za-zÀ-ÿ]+)\s*\/\s*(\d{2,4})$/);
+  if (!m) return null;
+  const nome = m[1].normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const idx = MESES_NORM.findIndex(x => x === nome);
+  if (idx < 0) return null;
+  let ano = Number(m[2]);
+  if (ano < 100) ano += 2000;
+  if (ano < 2015 || ano > 2100) return null;   // Dezembro/99 -> 2099, descartado
+  return { ano, mes: idx };
+}
+function ordemMes(i) { return i.ano * 12 + i.mes; }
+function labelMes(i) { return MESES_CURTO[i.mes] + '/' + String(i.ano).slice(2); }
+function labelMesData(d) { return MESES_CURTO[d.getMonth()] + '/' + String(d.getFullYear()).slice(2); }
+function hojeZerado() { const h = new Date(); h.setHours(0,0,0,0); return h; }
+function diasEntre(a, b) { return Math.round((b - a) / 86400000); }
+
+function colIdx(letra) {
+  let n = 0;
+  for (const c of letra.toUpperCase()) n = n * 26 + (c.charCodeAt(0) - 64);
+  return n - 1;
+}
+
+/** Lê uma célula por nome de cabeçalho, com fallback pela letra da coluna. */
+function campo(linha, cab, nome, letra) {
+  let i = cab.indexOf(nome);
+  if (i < 0 && letra) i = colIdx(letra);
+  if (i < 0) return '';
+  const v = linha[i];
+  return v === undefined || v === null ? '' : String(v).trim();
+}
+
+/* ===== leitura via Sheets API v4 ===== */
+async function lerAbas(ranges) {
+  const base = 'https://sheets.googleapis.com/v4/spreadsheets/' + CONFIG.SHEET_ID + '/values:batchGet';
+  const p = new URLSearchParams();
+  ranges.forEach(r => p.append('ranges', r));
+  p.append('valueRenderOption', 'FORMATTED_VALUE');
+  p.append('key', CONFIG.GOOGLE_API_KEY);
+  const resp = await fetch(base + '?' + p.toString(), { cache: 'no-store' });
+  if (!resp.ok) throw new Error('Sheets API ' + resp.status);
+  const json = await resp.json();
+  return (json.valueRanges || []).map(vr => vr.values || []);
+}
+
+/** Separa cabeçalho e linhas com conteúdo; remove repetições do cabeçalho no meio. */
+function tabela(rows) {
+  if (!rows || !rows.length) return { cab: [], linhas: [] };
+  const cab = rows[0].map(h => String(h).trim());
+  const assinatura = cab.filter(Boolean).slice(0, 3).join('|');
+  const linhas = rows.slice(1).filter(r => {
+    if (!r.some(c => String(c).trim())) return false;
+    const sig = r.map(c => String(c).trim()).filter(Boolean).slice(0, 3).join('|');
+    return sig !== assinatura;
+  });
+  return { cab, linhas };
+}
+
+/* ===== gráficos ===== */
+Chart.defaults.color = '#94a3b8';
+Chart.defaults.font.family = "'Segoe UI', system-ui, -apple-system, sans-serif";
+Chart.defaults.font.size = 12;
+Chart.defaults.borderColor = 'rgba(255,255,255,0.06)';
+Chart.defaults.plugins.legend.labels.usePointStyle = true;
+Chart.defaults.plugins.legend.labels.boxWidth = 8;
+Chart.defaults.plugins.legend.labels.padding = 14;
+
+const COR_AZUL = '#3b82f6', COR_VERDE = '#22c55e', COR_VERMELHO = '#ef4444',
+      COR_AMARELO = '#f59e0b', COR_ROXO = '#a855f7', COR_CIANO = '#06b6d4',
+      COR_ROSA = '#ec4899', COR_MUTED = '#64748b', COR_BORDA = 'rgba(255,255,255,0.06)';
+const PALETA = ['#3b82f6','#22c55e','#f59e0b','#ef4444','#a855f7','#06b6d4','#ec4899','#84cc16','#f97316','#14b8a6','#8b5cf6','#eab308'];
+
+let graficos = {};
+function destruir(id) { if (graficos[id]) { graficos[id].destroy(); delete graficos[id]; } }
+function hexA(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
+}
+
+function cartaoKPI(nome, valor, cor, rodape, pct) {
+  return '<div class="card kpi ' + cor + '">' +
+    '<div class="kpi-topo"><span class="kpi-nome">' + nome + '</span>' +
+    (pct !== undefined && pct !== null ? '<span class="kpi-pct ' + (cor === 'vermelho' ? 'vermelho' : cor === 'amarelo' ? 'amarelo' : cor === 'verde' ? 'verde' : 'neutro') + '">' + pct + '</span>' : '') +
+    '</div><div class="kpi-valor">' + valor + '</div>' +
+    (rodape ? '<div class="kpi-rodape"><span>' + rodape + '</span></div>' : '') + '</div>';
+}
+function itemResumo(nome, valor, nota, cor) {
+  return '<div class="resumo-item"><div class="resumo-nome"' + (cor ? ' style="color:' + cor + '"' : '') + '>' + nome + '</div>' +
+    '<div class="resumo-valor">' + valor + '</div>' +
+    '<div class="resumo-nota">' + (nota || '') + '</div></div>';
+}
+function obsCard(tipo, icone, titulo, texto) {
+  return '<div class="obs ' + tipo + '"><div class="obs-icone">' + icone + '</div><div class="obs-corpo">' +
+    '<div class="obs-titulo">' + titulo + '</div><div class="obs-texto">' + texto + '</div></div></div>';
+}
+function esc(s) {
+  return String(s === null || s === undefined ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function topN(mapa, n, rotuloOutros) {
+  const e = Object.entries(mapa).sort((a, b) => b[1] - a[1]);
+  const topo = e.slice(0, n);
+  const resto = e.slice(n).reduce((s, [, v]) => s + v, 0);
+  if (resto > 0) topo.push([rotuloOutros || 'Outros', resto]);
+  return topo;
+}
+
+/* =========================================================================
+   DETALHE EM JANELA (MODAL)
+   Uso: abrirDetalhe({ titulo, sub, blocos:[{titulo, campos:[{r,v,largo,classe}]}],
+                       notas:[{tipo,html}], acoes:[{rotulo,href}] })
+   Linhas de tabela viram clicáveis com `tabelaClicavel(tbodyId, lista, montador)`.
+   ========================================================================= */
+(function () {
+  const fundo = document.createElement('div');
+  fundo.className = 'modal-fundo oculto';
+  fundo.id = 'modalFundo';
+  fundo.innerHTML =
+    '<div class="modal" role="dialog" aria-modal="true">' +
+      '<div class="modal-topo">' +
+        '<div><div class="modal-titulo" id="modalTitulo"></div>' +
+        '<div class="modal-sub" id="modalSub"></div></div>' +
+        '<button class="modal-fechar" id="modalFechar" title="Fechar (Esc)">&#10005;</button>' +
+      '</div>' +
+      '<div class="modal-corpo" id="modalCorpo"></div>' +
+    '</div>';
+  document.body.appendChild(fundo);
+
+  fundo.addEventListener('click', ev => { if (ev.target === fundo) fecharDetalhe(); });
+  document.getElementById('modalFechar').addEventListener('click', fecharDetalhe);
+  document.addEventListener('keydown', ev => {
+    if (ev.key === 'Escape' && !fundo.classList.contains('oculto')) fecharDetalhe();
+  });
+})();
+
+function fecharDetalhe() {
+  const f = document.getElementById('modalFundo');
+  f.classList.remove('aberto');
+  setTimeout(() => f.classList.add('oculto'), 160);
+}
+
+function abrirDetalhe(cfg) {
+  const f = document.getElementById('modalFundo');
+  document.getElementById('modalTitulo').innerHTML = cfg.titulo || '';
+  document.getElementById('modalSub').innerHTML = cfg.sub || '';
+
+  let html = '';
+  (cfg.blocos || []).forEach(bl => {
+    const campos = (bl.campos || []).filter(c => c && c.v !== undefined && c.v !== null && c.v !== '');
+    if (!campos.length) return;
+    html += '<div class="modal-bloco">' +
+      (bl.titulo ? '<div class="modal-bloco-titulo">' + bl.titulo + '</div>' : '') +
+      '<div class="modal-campos">' +
+      campos.map(c =>
+        '<div class="modal-campo' + (c.largo ? ' largo' : '') + '">' +
+        '<div class="modal-rotulo">' + c.r + '</div>' +
+        '<div class="modal-valor ' + (c.classe || '') + '">' + c.v + '</div></div>'
+      ).join('') + '</div></div>';
+  });
+  (cfg.notas || []).forEach(n => {
+    if (!n || !n.html) return;
+    html += '<div class="modal-nota ' + (n.tipo || '') + '">' + n.html + '</div>';
+  });
+  if (cfg.acoes && cfg.acoes.length) {
+    html += '<div class="modal-acoes">' + cfg.acoes.filter(Boolean).map(a =>
+      '<a class="modal-acao" href="' + a.href + '" target="_blank" rel="noopener">' + a.rotulo + '</a>'
+    ).join('') + '</div>';
+  }
+  document.getElementById('modalCorpo').innerHTML = html ||
+    '<div style="color:var(--texto-muted);font-size:.85rem">Sem dados detalhados para este registro.</div>';
+
+  f.classList.remove('oculto');
+  requestAnimationFrame(() => f.classList.add('aberto'));
+}
+
+/** Marca as linhas de um tbody como clicáveis e liga cada uma ao seu registro. */
+function tabelaClicavel(tbodyId, lista, montador) {
+  const tb = document.getElementById(tbodyId);
+  if (!tb) return;
+  Array.from(tb.querySelectorAll('tr')).forEach((tr, i) => {
+    if (i >= lista.length || !lista[i]) return;
+    tr.classList.add('clicavel');
+    tr.title = 'Clique para ver os detalhes';
+    tr.addEventListener('click', () => abrirDetalhe(montador(lista[i])));
+  });
+}
+
+/** Rótulo padrão avisando que a tabela é clicável. */
+function dicaClique(texto) {
+  return '<span class="dica-clique">&#128065; ' + (texto || 'clique em uma linha para ver os detalhes') + '</span>';
+}
+
+/* =========================================================================
+   BUSCA
+   ========================================================================= */
+/** Normaliza para busca: sem acento, minúsculo, só dígitos preservados. */
+function chaveBusca(s) {
+  return String(s === null || s === undefined ? '' : s)
+    .normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+}
+/** Termo casa se todas as palavras aparecerem no texto; dígitos comparam só dígitos. */
+function casaBusca(termo, ...campos) {
+  const t = chaveBusca(termo);
+  if (!t) return true;
+  const texto = campos.map(c => chaveBusca(c)).join(' ');
+  const soDig = texto.replace(/\D/g, '');
+  return t.split(/\s+/).every(p => {
+    if (/^\d{3,}$/.test(p)) return soDig.includes(p) || texto.includes(p);
+    return texto.includes(p);
+  });
+}
+/** Monta o HTML de um campo de busca. */
+function campoBusca(id, placeholder) {
+  return '<div class="busca-wrap">' +
+    '<span class="busca-icone">&#128269;</span>' +
+    '<input type="search" class="busca" id="' + id + '" placeholder="' + placeholder + '" autocomplete="off" />' +
+    '<button type="button" class="busca-limpar oculto" id="' + id + 'Limpar" title="Limpar">&#10005;</button></div>';
+}
+/** Liga o campo de busca a um callback, com debounce curto. */
+function ligarBusca(id, aoDigitar) {
+  const el = document.getElementById(id);
+  const limpar = document.getElementById(id + 'Limpar');
+  if (!el) return;
+  let t = null;
+  const disparar = () => {
+    limpar.classList.toggle('oculto', !el.value);
+    clearTimeout(t);
+    t = setTimeout(() => aoDigitar(el.value), 120);
+  };
+  el.addEventListener('input', disparar);
+  limpar.addEventListener('click', () => { el.value = ''; el.focus(); disparar(); });
+}
+
+/* =========================================================================
+   LISTA DENTRO DO MODAL
+   Para quando o clique num cartão precisa mostrar "quais registros estão
+   por trás deste número".
+   ========================================================================= */
+/**
+ * abrirLista({ titulo, sub, colunas:[{r,chave,alinha,formata}], linhas:[obj],
+ *              vazio, rodape, notas:[{tipo,html}], limite })
+ */
+function abrirLista(cfg) {
+  const cols = cfg.colunas || [];
+  const linhas = cfg.linhas || [];
+  const limite = cfg.limite || 300;
+  const vis = linhas.slice(0, limite);
+
+  let html = '';
+  if (cfg.resumo && cfg.resumo.length) {
+    html += '<div class="modal-campos" style="margin-bottom:1rem">' +
+      cfg.resumo.map(c => '<div class="modal-campo">' +
+        '<div class="modal-rotulo">' + c.r + '</div>' +
+        '<div class="modal-valor ' + (c.classe || '') + '">' + c.v + '</div></div>').join('') +
+      '</div>';
+  }
+
+  if (!vis.length) {
+    html += '<div class="obs-vazio">' + (cfg.vazio || 'Nenhum registro para exibir.') + '</div>';
+  } else {
+    html += '<div class="modal-tabela-wrap"><table class="modal-tabela"><thead><tr>' +
+      cols.map(c => '<th' + (c.alinha === 'dir' ? ' class="dir"' : '') + '>' + c.r + '</th>').join('') +
+      '</tr></thead><tbody>' +
+      vis.map(l => '<tr>' + cols.map(c => {
+        const bruto = l[c.chave];
+        const v = c.formata ? c.formata(bruto, l) : (bruto === null || bruto === undefined || bruto === '' ? '—' : esc(bruto));
+        return '<td' + (c.alinha === 'dir' ? ' class="dir"' : '') + '>' + v + '</td>';
+      }).join('') + '</tr>').join('') +
+      '</tbody></table></div>';
+    if (linhas.length > vis.length) {
+      html += '<div class="modal-lista-nota">Exibindo os ' + vis.length + ' primeiros de ' +
+        linhas.length + ' registros.</div>';
+    } else {
+      html += '<div class="modal-lista-nota">' + linhas.length + ' registro' +
+        (linhas.length === 1 ? '' : 's') + '.</div>';
+    }
+  }
+
+  if (cfg.rodape) html += '<div class="modal-lista-total">' + cfg.rodape + '</div>';
+  (cfg.notas || []).forEach(n => {
+    if (n && n.html) html += '<div class="modal-nota ' + (n.tipo || '') + '">' + n.html + '</div>';
+  });
+
+  const f = document.getElementById('modalFundo');
+  document.getElementById('modalTitulo').innerHTML = cfg.titulo || '';
+  document.getElementById('modalSub').innerHTML = cfg.sub || '';
+  document.getElementById('modalCorpo').innerHTML = html;
+  f.classList.remove('oculto');
+  requestAnimationFrame(() => f.classList.add('aberto'));
+}
+
+/** Marca um cartão KPI como clicável e liga ao detalhamento. */
+function kpiClicavel(indice, aoAbrir) {
+  const cartoes = document.querySelectorAll('#kpis .kpi');
+  const el = cartoes[indice];
+  if (!el) return;
+  el.classList.add('kpi-clicavel');
+  el.title = 'Clique para ver os registros';
+  el.addEventListener('click', aoAbrir);
+}
+
+/** Liga vários cartões de uma vez: mapa {indice: função}. */
+function ligarKPIs(mapa) {
+  Object.keys(mapa).forEach(i => kpiClicavel(Number(i), mapa[i]));
+}
+
+
+/* =========================================================================
+   APLICAÇÃO
+   ========================================================================= */
+/* configuração deste painel */
+const PAINEL_CFG = {
+  "chave": "bancario",
+  "gidAuditoria": 1731824239,
+  "temAguardando": false,
+  "entidade": {
+    "rotulo": "Banco",
+    "colunas": [
+      "Banco principal"
+    ],
+    "letra": "M"
+  },
+  "filtros": [
+    {
+      "chave": "ent",
+      "rotulo": "Banco",
+      "colunas": [
+        "Banco principal"
+      ],
+      "letra": "M"
+    },
+    {
+      "chave": "contrato",
+      "rotulo": "Tipo de contrato",
+      "colunas": [
+        "Tipo de contrato"
+      ]
+    },
+    {
+      "chave": "status",
+      "rotulo": "Status geral",
+      "colunas": [
+        "Status geral"
+      ],
+      "letra": "G"
+    },
+    {
+      "chave": "fase",
+      "rotulo": "Fase atual",
+      "colunas": [
+        "Fase atual"
+      ],
+      "letra": "F"
+    },
+    {
+      "chave": "tribunal",
+      "rotulo": "Tribunal",
+      "colunas": [
+        "Tribunal"
+      ],
+      "letra": "Q"
+    },
+    {
+      "chave": "grau",
+      "rotulo": "Grau",
+      "colunas": [
+        "Grau"
+      ],
+      "letra": "R"
+    },
+    {
+      "chave": "tese",
+      "rotulo": "Tese principal",
+      "colunas": [
+        "Tese principal"
+      ]
+    },
+    {
+      "chave": "prob",
+      "rotulo": "Faixa de probabilidade",
+      "colunas": [
+        "Faixa de probabilidade"
+      ]
+    },
+    {
+      "chave": "prio",
+      "rotulo": "Prioridade do ato",
+      "colunas": [
+        "Prioridade"
+      ]
+    },
+    {
+      "chave": "resp",
+      "rotulo": "Responsável",
+      "colunas": [
+        "Responsável"
+      ]
+    },
+    {
+      "chave": "liminar",
+      "rotulo": "Situação da liminar",
+      "colunas": [
+        "Situação da liminar"
+      ]
+    },
+    {
+      "chave": "sentenca",
+      "rotulo": "Resultado da sentença",
+      "colunas": [
+        "Resultado da sentença"
+      ]
+    }
+  ],
+  "carteira": [
+    [
+      "Banco principal",
+      "Réu(s) / Operadora"
+    ],
+    "Fase atual",
+    "Status geral",
+    "Tese principal",
+    "Situação da liminar",
+    "Resultado da sentença",
+    "Maturidade para julgamento",
+    "Fase de caixa",
+    "Faixa de probabilidade",
+    "Análise de probabilidade de sucesso (%)",
+    "Total esperado para o escritório (R$)",
+    "Prioridade",
+    "Prazo do ato"
+  ]
+};
+
+/* =========================================================================
+   AUDITORIA DA CARTEIRA — motor comum aos painéis de auditoria
+   Lê a planilha de auditoria (abas Auditoria, Painel, Painel - detalhe,
+   Plano de ação, Resumo e, se existir, Aguardando). As KPIs da aba Painel
+   são RECALCULADAS aqui a partir das próprias fórmulas da planilha
+   (COUNTIF/COUNTIFS/SUMIF(S)/SUM/AVERAGE/COUNTA), o que permite:
+     · aplicar filtros (banco/operadora, fase, status…) a todas as KPIs;
+     · abrir, ao clicar, a lista exata dos processos que compõem o número.
+   Se uma fórmula não for suportada, o painel mostra o valor calculado pela
+   própria planilha (sem lista) e avisa.
+   ========================================================================= */
+const ABA = { auditoria: "'Auditoria'", painel: "'Painel'", detalhe: "'Painel - detalhe'", plano: "'Plano de ação'", resumo: "'Resumo'", aguardando: "'Aguardando'" };
+const LS_PREFIX = 'aud_' + (PAINEL_CFG.chave || 'x') + '_';
+const FILTRO = { dims: {}, busca: '' };
+
+/* ---------- utilidades ---------- */
+const normTxt = s => chaveBusca(s).replace(/\s+/g, ' ');
+const fmtData = d => d ? d.toLocaleDateString('pt-BR') : '—';
+const SERIAL_BASE = Date.UTC(1899, 11, 30);
+const serialParaData = n => { if (typeof n !== 'number' || !isFinite(n)) return null; const d = new Date(SERIAL_BASE + Math.round(n) * 86400000); return new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()); };
+const hojeSerial = () => { const h = hojeZerado(); return Math.round((Date.UTC(h.getFullYear(), h.getMonth(), h.getDate()) - SERIAL_BASE) / 86400000); };
+function colIdxDe(letras) { let n = 0; for (const c of letras.toUpperCase()) n = n * 26 + (c.charCodeAt(0) - 64); return n - 1; }
+function letraCol(i) { let s = ''; i++; while (i > 0) { const r = (i - 1) % 26; s = String.fromCharCode(65 + r) + s; i = Math.floor((i - 1) / 26); } return s; }
+function esconderVazio(v) { return v === null || v === undefined || v === '' ? '—' : esc(v); }
+function baixarArquivo(nome, conteudo, tipo) {
+  const blob = conteudo instanceof Blob ? conteudo : new Blob([conteudo], { type: tipo || 'text/plain;charset=utf-8' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = nome; document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+}
+function csvDe(cab, linhas) {
+  const cel = v => { const s = String(v === null || v === undefined ? '' : v); return /[";\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+  return '﻿' + [cab].concat(linhas).map(l => l.map(cel).join(';')).join('\r\n');
+}
+function xlsxDe(nome, abas) {
+  if (typeof XLSX === 'undefined') { const a = abas[0]; baixarArquivo(nome.replace(/\.xlsx$/, '.csv'), csvDe(a.cab, a.linhas), 'text/csv;charset=utf-8'); return; }
+  const wb = XLSX.utils.book_new();
+  abas.forEach(a => {
+    const ws = XLSX.utils.aoa_to_sheet([a.cab].concat(a.linhas));
+    ws['!cols'] = a.cab.map((c, i) => ({ wch: Math.min(60, Math.max(10, ...[c].concat(a.linhas.slice(0, 200).map(l => l[i])).map(v => String(v === null || v === undefined ? '' : v).length))) }));
+    XLSX.utils.book_append_sheet(wb, ws, String(a.nome).replace(/[\\\/\?\*\[\]:]/g, ' ').slice(0, 31) || 'Aba');
+  });
+  XLSX.writeFile(wb, nome);
+}
+const dataArquivo = () => { const h = new Date(); return h.getFullYear() + '-' + String(h.getMonth() + 1).padStart(2, '0') + '-' + String(h.getDate()).padStart(2, '0'); };
+
+/* ---------- leitura ---------- */
+async function lerAbasOpc(ranges, opt) {
+  const base = 'https://sheets.googleapis.com/v4/spreadsheets/' + CONFIG.SHEET_ID + '/values:batchGet';
+  const p = new URLSearchParams();
+  ranges.forEach(r => p.append('ranges', r));
+  p.append('valueRenderOption', opt || 'FORMATTED_VALUE');
+  p.append('key', CONFIG.GOOGLE_API_KEY);
+  const resp = await fetch(base + '?' + p.toString(), { cache: 'no-store' });
+  if (!resp.ok) throw new Error('Sheets API ' + resp.status);
+  const json = await resp.json();
+  return (json.valueRanges || []).map(vr => vr.values || []);
+}
+async function lerOpcional(range, opt) { try { return (await lerAbasOpc([range], opt))[0]; } catch (e) { return []; } }
+
+async function buscarTudo() {
+  const [audF, painelF, detalhe, plano, resumo] = await lerAbasOpc([
+    ABA.auditoria + '!A1:EZ500', ABA.painel + '!A1:D120', ABA.detalhe + '!A1:H400', ABA.plano + '!A1:L600', ABA.resumo + '!A1:Z500']);
+  /* Painel em FORMULA (para reproduzir o calculo) e Auditoria em valores
+     crus (numeros, percentuais como fracao e datas como serial) para as
+     comparacoes numericas das formulas. */
+  const [[painelFormula], [audU]] = await Promise.all([
+    lerAbasOpc([ABA.painel + '!A1:D120'], 'FORMULA'),
+    lerAbasOpc([ABA.auditoria + '!A3:EZ500'], 'UNFORMATTED_VALUE')]);
+  const aguardando = PAINEL_CFG.temAguardando ? await lerOpcional(ABA.aguardando + '!A1:L400') : [];
+  return montarBase(audF, audU, painelF, painelFormula, detalhe, plano, resumo, aguardando);
+}
+
+/* ---------- base ---------- */
+function montarBase(audF, audU, painelF, painelFormula, detalheRows, planoRows, resumoRows, aguardandoRows) {
+  const grupos = audF[0] || [], cab = (audF[1] || []).map(h => String(h).trim());
+  const grupoDe = []; let g = '';
+  cab.forEach((h, i) => { if (String(grupos[i] || '').trim()) g = String(grupos[i]).trim(); grupoDe[i] = g; });
+  const idx = {}; cab.forEach((h, i) => { if (h && idx[h] === undefined) idx[h] = i; });
+  const col = (nomes, letra) => { for (const n of [].concat(nomes)) if (idx[n] !== undefined) return idx[n]; return letra ? colIdxDe(letra) : -1; };
+  const iProc = col('Número do processo (CNJ)', 'B'), iCli = col('Cliente (nome no sistema)', 'C');
+  const iEnt = col(PAINEL_CFG.entidade.colunas, PAINEL_CFG.entidade.letra);
+  const processos = [];
+  for (let r = 2; r < audF.length; r++) {
+    const f = audF[r] || [], u = audU[r - 2] || [];
+    const numero = String(f[iProc] || '').trim();
+    if (!numero) continue;
+    processos.push({ linha: r + 1, numero, cliente: String(f[iCli] || '').trim(), entidade: String(f[iEnt] || '').trim(), f, u });
+  }
+  const painel = parsePainel(painelF, painelFormula);
+  const detalhe = parseDetalhe(detalheRows);
+  const plano = parsePlano(planoRows);
+  const resumo = tabela(resumoRows.slice(1).some(l => l.some(Boolean)) ? resumoRows.slice(1) : []);
+  const aguardando = parseAguardando(aguardandoRows);
+  const base = { cab, grupoDe, idx, col, processos, painel, detalhe, plano, resumo, aguardando, iProc, iCli, iEnt };
+  base.dims = montarDimensoes(base);
+  return base;
+}
+
+/* Aba Painel: A = rótulo (ou título de seção quando B vazio), B = fórmula, C = ação recomendada. */
+function parsePainel(painelF, painelFormula) {
+  const secoes = []; let atual = null;
+  for (let r = 1; r < Math.max(painelF.length, painelFormula.length); r++) {
+    const lf = painelF[r] || [], lr = painelFormula[r] || [];
+    const rotulo = String(lf[0] || '').trim(); if (!rotulo) continue;
+    const formula = String(lr[1] || '').trim(), valorPlanilha = String(lf[1] || '').trim();
+    if (!formula && !valorPlanilha) { atual = { titulo: rotulo, kpis: [] }; secoes.push(atual); continue; }
+    if (!atual) { atual = { titulo: 'Indicadores', kpis: [] }; secoes.push(atual); }
+    let ast = null, erro = '';
+    if (formula.startsWith('=')) { try { ast = parseFormula(formula.slice(1)); } catch (e) { erro = e.message; } }
+    atual.kpis.push({ rotulo, formula, ast, erro, valorPlanilha, acao: String(lf[2] || '').trim(), linha: r + 1, secao: atual.titulo,
+      moeda: /\(R\$\)|R\$/.test(rotulo) || /^R\$/.test(valorPlanilha), pct: /taxa|probabilidade média|%/i.test(rotulo) && /%$/.test(valorPlanilha) });
+  }
+  return secoes;
+}
+
+/* Aba Painel - detalhe: blocos "TÍTULO" → linha de cabeçalho → linhas de processo. */
+function parseDetalhe(rows) {
+  const secoes = []; let atual = null, cab = null;
+  for (let r = 0; r < rows.length; r++) {
+    const l = (rows[r] || []).map(c => String(c ?? '').trim());
+    if (!l.some(Boolean)) continue;
+    const preenchidas = l.filter(Boolean).length;
+    if (preenchidas === 1 && !/^\d{7}-\d{2}\.\d{4}/.test(l[0])) { if (r < 2 && !atual && /PAINEL|Regenerado/i.test(l[0])) continue; atual = { titulo: l[0], cab: null, linhas: [] }; secoes.push(atual); cab = null; continue; }
+    if (/^Processo/i.test(l[0]) && /Cliente/i.test(l[1] || '')) { cab = l; if (atual) atual.cab = cab; continue; }
+    if (atual && cab) { const o = {}; cab.forEach((c, i) => { if (c) o[c] = l[i] || ''; }); o._secao = atual.titulo; atual.linhas.push(o); }
+  }
+  return secoes.filter(s => s.cab);
+}
+function parsePlano(rows) {
+  const t = tabela(rows); const out = [];
+  t.linhas.forEach(l => { const o = {}; t.cab.forEach((c, i) => { if (c) o[c] = String(l[i] ?? '').trim(); }); if (o['Número do processo (CNJ)'] || o['Descrição do ato / pedido']) out.push(o); });
+  return { cab: t.cab.filter(Boolean), itens: out };
+}
+function parseAguardando(rows) {
+  if (!rows || rows.length < 2) return { cab: [], itens: [] };
+  const inicio = rows.findIndex(l => /^ID$/i.test(String(l[0] || '').trim()) && /processo/i.test(String(l[1] || '')));
+  if (inicio < 0) return { cab: [], itens: [] };
+  const t = tabela(rows.slice(inicio)); const out = [];
+  t.linhas.forEach(l => { const o = {}; t.cab.forEach((c, i) => { if (c) o[c] = String(l[i] ?? '').trim(); }); if (o['Número do processo (CNJ)']) out.push(o); });
+  return { cab: t.cab.filter(Boolean), itens: out };
+}
+
+/* ---------- dimensões de filtro (valores distintos por coluna) ---------- */
+function montarDimensoes(base) {
+  return PAINEL_CFG.filtros.map(d => {
+    const i = base.col(d.colunas, d.letra); if (i < 0) return null;
+    const cont = {}; base.processos.forEach(p => { const v = String(p.f[i] || '').trim() || '(vazio)'; cont[v] = (cont[v] || 0) + 1; });
+    const valores = Object.keys(cont).sort((a, b) => cont[b] - cont[a] || a.localeCompare(b));
+    return { chave: d.chave, rotulo: d.rotulo, i, valores, cont };
+  }).filter(Boolean);
+}
+function passaFiltro(base, p) {
+  for (const d of base.dims) {
+    const sel = FILTRO.dims[d.chave]; if (!sel) continue;
+    const v = String(p.f[d.i] || '').trim();
+    if (sel === '(vazio)') { if (v) return false; } else if (v !== sel) return false;
+  }
+  if (FILTRO.busca && !casaBusca(FILTRO.busca, p.numero, p.cliente, p.entidade)) return false;
+  return true;
+}
+const ativos = base => base.processos.filter(p => passaFiltro(base, p));
+const filtroAtivo = () => Object.values(FILTRO.dims).some(Boolean) || !!FILTRO.busca;
+
+/* =========================================================================
+   MINI-AVALIADOR DE FÓRMULAS (subconjunto usado na aba Painel)
+   Suporta: números, textos, & (concat), + - * /, parênteses, IFERROR,
+   COUNTIF, COUNTIFS, SUMIF, SUMIFS, SUM, AVERAGE, COUNTA, COUNT, TODAY,
+   MAX, MIN, ROUND, IF (simples). Intervalos: Auditoria!$X$3:$X$500.
+   ========================================================================= */
+function tokenizar(s) {
+  const toks = []; let i = 0;
+  while (i < s.length) {
+    const c = s[i];
+    if (/\s/.test(c)) { i++; continue; }
+    if (c === '"') { let j = i + 1, v = ''; while (j < s.length) { if (s[j] === '"') { if (s[j + 1] === '"') { v += '"'; j += 2; continue; } break; } v += s[j]; j++; } toks.push({ t: 'str', v }); i = j + 1; continue; }
+    if (/[0-9]/.test(c) || (c === ',' && /[0-9]/.test(s[i + 1] || ''))) { let j = i; while (j < s.length && /[0-9.,]/.test(s[j])) j++; toks.push({ t: 'num', v: parseFloat(s.slice(i, j).replace(',', '.')) }); i = j; continue; }
+    if (/[A-Za-zÀ-ÿ_$'!]/.test(c)) {
+      let j = i; while (j < s.length && /[A-Za-zÀ-ÿ0-9_$'!:.]/.test(s[j])) j++;
+      const w = s.slice(i, j);
+      if (s[j] === '(') { toks.push({ t: 'fn', v: w.toUpperCase() }); i = j + 1; toks.push({ t: '(' }); continue; }
+      toks.push({ t: 'ref', v: w }); i = j; continue;
+    }
+    if ('+-*/&(),;<>='.includes(c)) {
+      if ((c === '<' || c === '>') && (s[i + 1] === '=' || s[i + 1] === '>')) { toks.push({ t: 'op', v: c + s[i + 1] }); i += 2; continue; }
+      toks.push({ t: c === ';' || c === ',' ? ';' : c === '(' || c === ')' ? c : 'op', v: c }); i++; continue;
+    }
+    throw new Error('caractere inesperado: ' + c);
+  }
+  return toks;
+}
+function parseFormula(src) {
+  const toks = tokenizar(src); let p = 0;
+  const olhar = () => toks[p], comer = t => { const k = toks[p]; if (!k || (t && k.t !== t)) throw new Error('esperava ' + t); p++; return k; };
+  function expr() { let n = termo(); while (olhar() && olhar().t === 'op' && ['+', '-', '&', '<', '>', '=', '<=', '>=', '<>'].includes(olhar().v)) { const op = comer().v; n = { tipo: 'bin', op, a: n, b: termo() }; } return n; }
+  function termo() { let n = fator(); while (olhar() && olhar().t === 'op' && (olhar().v === '*' || olhar().v === '/')) { const op = comer().v; n = { tipo: 'bin', op, a: n, b: fator() }; } return n; }
+  function fator() {
+    const k = olhar(); if (!k) throw new Error('fim inesperado');
+    if (k.t === 'num') { p++; return { tipo: 'num', v: k.v }; }
+    if (k.t === 'str') { p++; return { tipo: 'str', v: k.v }; }
+    if (k.t === 'op' && k.v === '-') { p++; return { tipo: 'neg', a: fator() }; }
+    if (k.t === '(') { p++; const n = expr(); comer(')'); return n; }
+    if (k.t === 'fn') { p++; comer('('); const args = []; if (olhar() && olhar().t !== ')') { args.push(expr()); while (olhar() && olhar().t === ';') { p++; args.push(expr()); } } comer(')'); return { tipo: 'fn', nome: k.v, args }; }
+    if (k.t === 'ref') { p++; return { tipo: 'ref', v: k.v }; }
+    throw new Error('token inesperado ' + JSON.stringify(k));
+  }
+  const n = expr(); if (p < toks.length) throw new Error('sobra na fórmula'); return n;
+}
+/* Intervalo "Auditoria!$CB$3:$CB$500" → índice da coluna (só a aba Auditoria é suportada). */
+function refColuna(ref) {
+  const m = String(ref).replace(/'/g, '').match(/^(?:([^!]+)!)?\$?([A-Z]{1,3})\$?\d*(?::\$?([A-Z]{1,3})\$?\d*)?$/i);
+  if (!m) throw new Error('referência não suportada: ' + ref);
+  if (m[1] && normTxt(m[1]) !== 'auditoria') throw new Error('só a aba Auditoria é suportada (' + m[1] + ')');
+  if (m[3] && m[3].toUpperCase() !== m[2].toUpperCase()) throw new Error('intervalo de várias colunas: ' + ref);
+  return colIdxDe(m[2]);
+}
+/* Critério no estilo COUNTIF. Devolve função(valorFormatado, valorCru) → bool. */
+function criterio(c) {
+  let s = c === null || c === undefined ? '' : String(c);
+  let op = '=';
+  const m = s.match(/^(<>|<=|>=|<|>|=)(.*)$/s); if (m) { op = m[1]; s = m[2]; }
+  const num = s.trim() === '' ? NaN : Number(s.replace(',', '.'));
+  const ehNum = s.trim() !== '' && isFinite(num);
+  if (op !== '=' && op !== '<>') {
+    return (vf, vu) => { const n = typeof vu === 'number' ? vu : parseNumBR(vf); if (!ehNum || vf === '' || vf === null || vf === undefined) return false;
+      return op === '<' ? n < num : op === '>' ? n > num : op === '<=' ? n <= num : n >= num; };
+  }
+  if (s === '') return (vf) => (op === '=') ? (vf === '' || vf === null || vf === undefined) : !(vf === '' || vf === null || vf === undefined);
+  const temCuringa = /[*?]/.test(s);
+  const re = temCuringa ? new RegExp('^' + s.split(/(\*|\?)/).map(x => x === '*' ? '.*' : x === '?' ? '.' : x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('') + '$', 'i') : null;
+  return (vf, vu) => {
+    let ok;
+    if (re) ok = re.test(String(vf === null || vf === undefined ? '' : vf));
+    else if (ehNum && typeof vu === 'number') ok = Math.abs(vu - num) < 1e-9;
+    else ok = normTxt(vf) === normTxt(s);
+    return op === '<>' ? !ok : ok;
+  };
+}
+/* Avalia o nó sobre a lista de processos; devolve {v, rows:Set(linhas)} . */
+function avaliar(no, procs) {
+  const juntar = (...rs) => { const s = new Set(); rs.forEach(r => r && r.forEach(x => s.add(x))); return s; };
+  const valorCru = (p, i) => { const u = p.u[i]; return (typeof u === 'number') ? u : (typeof u === 'string' && /^[=]/.test(u)) ? parseNumBR(p.f[i]) : u; };
+  switch (no.tipo) {
+    case 'num': return { v: no.v, rows: new Set() };
+    case 'str': return { v: no.v, rows: new Set() };
+    case 'neg': { const a = avaliar(no.a, procs); return { v: -Number(a.v || 0), rows: a.rows }; }
+    case 'bin': {
+      const a = avaliar(no.a, procs), b = avaliar(no.b, procs);
+      const rows = juntar(a.rows, b.rows);
+      const na = Number(a.v || 0), nb = Number(b.v || 0);
+      /* A − B: lista o que sobra (ex.: COUNTA(col) − COUNTIF(col;"Não")). */
+      const menos = new Set([...a.rows].filter(x => !b.rows.has(x)));
+      switch (no.op) {
+        case '+': return { v: na + nb, rows }; case '-': return { v: na - nb, rows: menos }; case '*': return { v: na * nb, rows };
+        case '/': if (nb === 0) throw new Error('#DIV/0!'); return { v: na / nb, rows };
+        case '&': return { v: String(a.v ?? '') + String(b.v ?? ''), rows };
+        case '<': return { v: na < nb, rows }; case '>': return { v: na > nb, rows }; case '<=': return { v: na <= nb, rows }; case '>=': return { v: na >= nb, rows };
+        case '=': return { v: a.v == b.v, rows }; case '<>': return { v: a.v != b.v, rows };
+      }
+      throw new Error('operador ' + no.op);
+    }
+    case 'ref': throw new Error('referência solta: ' + no.v);
+    case 'fn': {
+      const F = no.nome, args = no.args;
+      if (F === 'TODAY') return { v: hojeSerial(), rows: new Set() };
+      if (F === 'IFERROR') { try { return avaliar(args[0], procs); } catch (e) { return avaliar(args[1] || { tipo: 'str', v: '' }, procs); } }
+      if (F === 'IF') { const c = avaliar(args[0], procs); return c.v ? avaliar(args[1], procs) : avaliar(args[2] || { tipo: 'str', v: '' }, procs); }
+      if (F === 'ROUND') { const a = avaliar(args[0], procs); const d = args[1] ? Number(avaliar(args[1], procs).v) : 0; return { v: Math.round(Number(a.v) * Math.pow(10, d)) / Math.pow(10, d), rows: a.rows }; }
+      if (F === 'COUNTIF' || F === 'SUMIF') {
+        const ci = refColuna(args[0].v), crit = criterio(avaliar(args[1], procs).v);
+        const cs = F === 'SUMIF' ? refColuna((args[2] || args[0]).v) : null;
+        const rows = new Set(); let soma = 0;
+        procs.forEach(p => { if (crit(p.f[ci] ?? '', valorCru(p, ci))) { rows.add(p.linha); if (cs !== null) soma += Number(valorCru(p, cs)) || parseNumBR(p.f[cs]) || 0; } });
+        return { v: F === 'SUMIF' ? soma : rows.size, rows };
+      }
+      if (F === 'COUNTIFS' || F === 'SUMIFS') {
+        let k = 0, cs = null; if (F === 'SUMIFS') { cs = refColuna(args[0].v); k = 1; }
+        const pares = []; for (; k + 1 < args.length; k += 2) pares.push([refColuna(args[k].v), criterio(avaliar(args[k + 1], procs).v)]);
+        const rows = new Set(); let soma = 0;
+        procs.forEach(p => { if (pares.every(([ci, crit]) => crit(p.f[ci] ?? '', valorCru(p, ci)))) { rows.add(p.linha); if (cs !== null) { const u = valorCru(p, cs); soma += typeof u === 'number' ? u : parseNumBR(p.f[cs]); } } });
+        return { v: F === 'SUMIFS' ? soma : rows.size, rows };
+      }
+      if (['SUM', 'AVERAGE', 'COUNTA', 'COUNT', 'MAX', 'MIN'].includes(F)) {
+        const rows = new Set(), vals = [];
+        args.forEach(a => {
+          if (a.tipo === 'ref') { const ci = refColuna(a.v); procs.forEach(p => { const vf = p.f[ci]; if (vf === undefined || vf === null || String(vf).trim() === '') return; const u = valorCru(p, ci); const n = typeof u === 'number' ? u : parseNumBR(vf); if (F === 'COUNTA' || isFinite(n)) { rows.add(p.linha); vals.push(typeof u === 'number' ? u : n); } }); }
+          else { const r = avaliar(a, procs); vals.push(Number(r.v) || 0); r.rows.forEach(x => rows.add(x)); }
+        });
+        let v;
+        if (F === 'SUM') v = vals.reduce((s, x) => s + x, 0);
+        else if (F === 'AVERAGE') { if (!vals.length) throw new Error('#DIV/0!'); v = vals.reduce((s, x) => s + x, 0) / vals.length; }
+        else if (F === 'COUNTA' || F === 'COUNT') v = vals.length;
+        else if (F === 'MAX') v = Math.max(...vals); else v = Math.min(...vals);
+        return { v, rows };
+      }
+      throw new Error('função não suportada: ' + F);
+    }
+  }
+  throw new Error('nó desconhecido');
+}
+/* Colunas que a fórmula consulta (para mostrar "por que está aqui" na lista). */
+function colunasDaFormula(no, out) {
+  out = out || new Set();
+  if (!no) return out;
+  if (no.tipo === 'ref') { try { out.add(refColuna(no.v)); } catch (e) {} }
+  if (no.tipo === 'fn') no.args.forEach(a => colunasDaFormula(a, out));
+  if (no.tipo === 'bin') { colunasDaFormula(no.a, out); colunasDaFormula(no.b, out); }
+  if (no.tipo === 'neg') colunasDaFormula(no.a, out);
+  return out;
+}
+
+/* ---------- cálculo das KPIs no recorte ---------- */
+function calcularPainel(base, procs) {
+  return base.painel.map(sec => ({ titulo: sec.titulo, kpis: sec.kpis.map(k => {
+    let v = null, rows = new Set(), erro = k.erro, cols = colunasDaFormula(k.ast);
+    if (k.ast && !erro) { try { const r = avaliar(k.ast, procs); v = r.v; rows = r.rows; } catch (e) { erro = e.message; } }
+    return Object.assign({}, k, { v, rows, erroCalc: erro, cols });
+  }) }));
+}
+function formatarKpi(k) {
+  if (k.v === null || k.v === undefined || k.v === '') return k.valorPlanilha || '—';
+  if (typeof k.v === 'boolean') return k.v ? 'Sim' : 'Não';
+  const n = Number(k.v);
+  if (!isFinite(n)) return String(k.v);
+  if (k.moeda) return moeda(n);
+  if (k.pct) return pct1(n <= 1 ? n * 100 : n);
+  return Number.isInteger(n) ? num(n) : n.toFixed(1).replace('.', ',');
+}
+
+/* ---------- render ---------- */
+let controlesProntos = false;
+function render(base) {
+  if (!controlesProntos) { montarControles(base); controlesProntos = true; }
+  const procs = ativos(base);
+  const painel = calcularPainel(base, procs);
+  pintarFiltro(base, procs);
+  renderPainel(base, painel, procs);
+  renderPrioridades(base, procs);
+  renderPlano(base, procs);
+  renderAguardando(base, procs);
+  renderCarteira(base, procs);
+  renderGraficos(base, procs);
+  renderObs(base, painel, procs);
+  DADOS_CALC = { painel, procs };
+}
+let DADOS_CALC = null;
+
+function montarControles(base) {
+  const box = document.getElementById('filtrosDims');
+  box.innerHTML = base.dims.map(d => '<label class="filtro-campo">' + esc(d.rotulo) + ' <select class="campo-texto" data-dim="' + esc(d.chave) + '"><option value="">Todos</option>' +
+    d.valores.map(v => '<option value="' + esc(v) + '">' + esc(v) + ' (' + d.cont[v] + ')</option>').join('') + '</select></label>').join('');
+  box.addEventListener('change', ev => { const s = ev.target.closest('select[data-dim]'); if (!s) return; FILTRO.dims[s.dataset.dim] = s.value; if (DADOS) render(DADOS); });
+  document.getElementById('buscaBox').innerHTML = campoBusca('inputBusca', 'Processo, cliente ou ' + PAINEL_CFG.entidade.rotulo.toLowerCase() + '…');
+  ligarBusca('inputBusca', v => { FILTRO.busca = v; if (DADOS) render(DADOS); });
+  document.getElementById('btnLimpar').addEventListener('click', () => { FILTRO.dims = {}; FILTRO.busca = ''; box.querySelectorAll('select').forEach(s => s.value = ''); const i = document.getElementById('inputBusca'); if (i) i.value = ''; if (DADOS) render(DADOS); });
+  document.getElementById('btnXlsx').addEventListener('click', () => exportarRelatorio(DADOS));
+  document.getElementById('btnCsvPainel').addEventListener('click', () => exportarPainelCsv(DADOS));
+  document.getElementById('btnImprimir').addEventListener('click', () => window.print());
+  document.getElementById('filtrosPlano').addEventListener('click', ev => { const b = ev.target.closest('.chip'); if (!b) return; FILTRO.plano = b.dataset.plano; document.querySelectorAll('#filtrosPlano .chip').forEach(c => c.classList.toggle('ativo', c === b)); if (DADOS) renderPlano(DADOS, ativos(DADOS)); });
+  document.getElementById('btnXlsxPlano').addEventListener('click', () => { const l = planoFiltrado(DADOS, ativos(DADOS)); xlsxDe('plano-de-acao_' + dataArquivo() + '.xlsx', [{ nome: 'Plano de ação', cab: DADOS.plano.cab, linhas: l.map(o => DADOS.plano.cab.map(c => o[c] || '')) }]); });
+  document.getElementById('btnXlsxCarteira').addEventListener('click', () => exportarCarteira(DADOS, ativos(DADOS)));
+  document.getElementById('tituloGrafEntidade').textContent = 'Processos e probabilidade média por ' + PAINEL_CFG.entidade.rotulo.toLowerCase();
+}
+function pintarFiltro(base, procs) {
+  const partes = base.dims.filter(d => FILTRO.dims[d.chave]).map(d => d.rotulo + ' = ' + FILTRO.dims[d.chave]);
+  if (FILTRO.busca) partes.push('busca "' + FILTRO.busca + '"');
+  document.getElementById('subFiltro').innerHTML = '<b>' + procs.length + '</b> de ' + base.processos.length + ' processos' +
+    (partes.length ? ' · recorte: <b>' + esc(partes.join(' · ')) + '</b> — todas as KPIs abaixo respeitam o recorte' : ' · sem filtro (carteira inteira)');
+}
+
+/* colunas padrão das listas de processos */
+const COLS_FIXAS = [['Fase atual', 'F'], ['Status geral', 'G'], ['Tese principal', null], ['Faixa de probabilidade', null], ['Análise de probabilidade de sucesso (%)', null]];
+const colsFixas = base => COLS_FIXAS.map(([n, letra]) => ({ n, i: base.col(n, letra) })).filter(x => x.i >= 0);
+const rotuloCurto = n => n.replace(' (%)', '').replace('Análise de probabilidade de sucesso', 'Probab.').replace(/ \(R\$\)/, '');
+function colunasLista(base, extras) {
+  const cols = [
+    { r: 'Processo', chave: 'numero', formata: (v, l) => '<span class="mono">' + esc(v) + '</span>' },
+    { r: 'Cliente', chave: 'cliente' }, { r: PAINEL_CFG.entidade.rotulo, chave: 'entidade' }
+  ];
+  colsFixas(base).forEach(({ n, i }) => { if (!(extras || []).includes(i)) cols.push({ r: rotuloCurto(n), chave: 'c' + i, formata: v => esconderVazio(v) }); });
+  (extras || []).forEach(i => cols.push({ r: base.cab[i] || letraCol(i), chave: 'c' + i, formata: v => '<b>' + esconderVazio(v) + '</b>' }));
+  return cols;
+}
+function linhasLista(base, procs, extras) {
+  const idxs = new Set(colsFixas(base).map(x => x.i)); (extras || []).forEach(i => idxs.add(i));
+  return procs.map(p => { const o = { numero: p.numero, cliente: p.cliente, entidade: p.entidade, _p: p }; idxs.forEach(i => o['c' + i] = String(p.f[i] ?? '').trim()); return o; });
+}
+/* abre a lista no modal com botão de exportação e clique na linha → ficha do processo */
+function abrirListaProcessos(base, titulo, sub, procs, extras, notas) {
+  const cols = colunasLista(base, extras), linhas = linhasLista(base, procs, extras);
+  abrirLista({ titulo, sub, colunas: cols, linhas, limite: 500, notas, vazio: 'Nenhum processo neste recorte.',
+    rodape: '<span class="modal-acoes-inline"><button type="button" class="modal-acao" id="expListaXlsx">&#11015; Exportar XLSX</button>' +
+            '<button type="button" class="modal-acao" id="expListaCsv">&#11015; CSV</button><span class="sub">clique numa linha para abrir a ficha do processo</span></span>' });
+  const cabExp = cols.map(c => c.r.replace(/<[^>]*>/g, ''));
+  const linExp = linhas.map(l => cols.map(c => l[c.chave] ?? ''));
+  const nome = 'lista_' + normTxt(titulo).replace(/[^a-z0-9]+/g, '-').slice(0, 40) + '_' + dataArquivo();
+  const bx = document.getElementById('expListaXlsx'), bc = document.getElementById('expListaCsv');
+  if (bx) bx.addEventListener('click', ev => { ev.stopPropagation(); xlsxDe(nome + '.xlsx', [{ nome: 'Processos', cab: cabExp, linhas: linExp }]); });
+  if (bc) bc.addEventListener('click', ev => { ev.stopPropagation(); baixarArquivo(nome + '.csv', csvDe(cabExp, linExp), 'text/csv;charset=utf-8'); });
+  Array.from(document.querySelectorAll('#modalCorpo tbody tr')).forEach((tr, i) => { if (!linhas[i]) return; tr.classList.add('clicavel'); tr.title = 'Abrir a ficha do processo'; tr.addEventListener('click', () => fichaProcesso(base, linhas[i]._p)); });
+}
+/* ficha completa do processo: todas as colunas preenchidas, agrupadas como na planilha */
+function fichaProcesso(base, p) {
+  const blocos = []; let atual = null;
+  base.cab.forEach((h, i) => {
+    if (!h) return; const v = String(p.f[i] ?? '').trim(); if (!v) return;
+    const g = base.grupoDe[i] || 'Outros';
+    if (!atual || atual.titulo !== g) { atual = { titulo: g, campos: [] }; blocos.push(atual); }
+    atual.campos.push({ r: esc(h), v: esc(v), largo: v.length > 70, classe: v.length > 70 ? 'texto' : '' });
+  });
+  const plano = base.plano.itens.filter(o => o['Número do processo (CNJ)'] === p.numero);
+  const notas = plano.length ? [{ tipo: '', html: '<b>Plano de ação (' + plano.length + ' atos):</b><br>' + plano.map(o => '• [' + esc(o['Prioridade'] || '') + '] ' + esc(o['Descrição do ato / pedido'] || o['Tipo de ato'] || '') + (o['Prazo'] ? ' — prazo ' + esc(o['Prazo']) : '') + (o['Responsável'] ? ' (' + esc(o['Responsável']) + ')' : '') + (o['Status'] ? ' · ' + esc(o['Status']) : '')).join('<br>') }] : [];
+  abrirDetalhe({ titulo: '<span class="mono">' + esc(p.numero) + '</span> — ' + esc(p.cliente), sub: esc(p.entidade) + ' · linha ' + p.linha + ' da aba Auditoria', blocos, notas,
+    acoes: [{ rotulo: 'Abrir a linha na planilha', href: 'https://docs.google.com/spreadsheets/d/' + CONFIG.SHEET_ID + '/edit#gid=' + (PAINEL_CFG.gidAuditoria || 0) + '&range=A' + p.linha }] });
+}
+
+function renderPainel(base, painel, procs) {
+  const box = document.getElementById('painel');
+  let html = '';
+  painel.forEach((sec, si) => {
+    html += '<div class="secao-titulo sec-kpi">' + esc(sec.titulo) + '</div><div class="kpis kpis-sec" data-sec="' + si + '">';
+    sec.kpis.forEach((k, ki) => {
+      const valor = formatarKpi(k), zero = Number(k.v) === 0;
+      const cor = k.erroCalc ? 'neutro' : /urgente|vencido|prescri|sem |incorreta|indeferid|improcedente|baixa/i.test(k.rotulo) && !zero ? 'vermelho'
+        : /apto|maduro|deferida|procedente|alvará|depósito|trânsito|esperado/i.test(k.rotulo) && !zero ? 'verde' : /conclusos|pendente|postergada|aguardando/i.test(k.rotulo) && !zero ? 'amarelo' : 'azul';
+      const rod = (k.acao ? '<span class="acao">' + esc(k.acao) + '</span>' : '') + (k.erroCalc ? '<span class="alerta">valor da planilha (fórmula não reproduzida)</span>' : '') +
+        (filtroAtivo() && k.valorPlanilha && !k.erroCalc ? '<span class="sub">planilha (sem filtro): ' + esc(k.valorPlanilha) + '</span>' : '');
+      html += '<div class="card kpi ' + cor + (k.erroCalc ? '' : ' kpi-clicavel') + '" data-sec="' + si + '" data-kpi="' + ki + '" title="' + (k.erroCalc ? esc(k.erroCalc) : 'Clique para ver os processos') + '">' +
+        '<div class="kpi-topo"><span class="kpi-nome">' + esc(k.rotulo) + '</span></div><div class="kpi-valor">' + valor + '</div>' +
+        (rod ? '<div class="kpi-rodape">' + rod + '</div>' : '') + '</div>';
+    });
+    html += '</div>';
+  });
+  box.innerHTML = html;
+  box.querySelectorAll('.kpi-clicavel').forEach(el => el.addEventListener('click', () => {
+    const k = painel[Number(el.dataset.sec)].kpis[Number(el.dataset.kpi)];
+    const lista = procs.filter(p => k.rows.has(p.linha));
+    const extras = [...k.cols].filter(i => i !== base.iProc && i !== base.iCli && i !== base.iEnt);
+    abrirListaProcessos(base, esc(k.rotulo) + ' — ' + formatarKpi(k), 'Fórmula da planilha: <span class="mono">' + esc(k.formula) + '</span>' + (k.acao ? '<br>Ação recomendada: <b>' + esc(k.acao) + '</b>' : ''),
+      lista, extras, k.rows.size && !lista.length ? [{ tipo: 'alerta', html: 'Nenhum processo listado: o valor vem de uma média/soma sem linha específica.' }] : null);
+  }));
+}
+
+/* ---------- Painel - detalhe (prioridades) ---------- */
+function renderPrioridades(base, procs) {
+  const nums = new Set(procs.map(p => p.numero));
+  const box = document.getElementById('prioridades');
+  const cabs = ['Processo (CNJ)', 'Cliente', 'Juízo', 'Situação / por que está aqui', 'O que fazer', 'Prazo', 'Responsável', 'Prioridade'];
+  box.innerHTML = base.detalhe.map((s, si) => {
+    const linhas = s.linhas.filter(o => !filtroAtivo() || nums.has(o['Processo (CNJ)']));
+    return '<details class="bloco"' + (si === 0 && linhas.length ? ' open' : '') + '><summary><span class="bloco-titulo">' + esc(s.titulo) + '</span><span class="tag-pct ' + (linhas.length ? 'amarelo' : 'neutro') + '">' + linhas.length + '</span>' +
+      (linhas.length ? '<button type="button" class="btn-mini" data-exp="' + si + '">&#11015; XLSX</button>' : '') + '</summary>' +
+      (linhas.length ? '<div class="tabela-wrap"><table class="compacta"><thead><tr>' + s.cab.map(c => '<th>' + esc(c) + '</th>').join('') + '</tr></thead><tbody>' +
+        linhas.map(o => '<tr class="clicavel" data-num="' + esc(o['Processo (CNJ)']) + '">' + s.cab.map(c => '<td class="' + (c === 'Prioridade' ? 'prio-' + normTxt(o[c]).replace(/\s+/g, '') : '') + '">' + (c === 'Processo (CNJ)' ? '<span class="mono">' + esc(o[c]) + '</span>' : esc(o[c] || '')) + '</td>').join('') + '</tr>').join('') +
+        '</tbody></table></div>' : '<div class="obs-vazio">Nenhum processo neste bloco' + (filtroAtivo() ? ' (no recorte)' : '') + '.</div>') + '</details>';
+  }).join('') || '<div class="obs-vazio">A aba "Painel - detalhe" está vazia.</div>';
+  box.querySelectorAll('button[data-exp]').forEach(b => b.addEventListener('click', ev => { ev.preventDefault(); ev.stopPropagation(); const s = base.detalhe[Number(b.dataset.exp)];
+    const linhas = s.linhas.filter(o => !filtroAtivo() || nums.has(o['Processo (CNJ)'])); xlsxDe('prioridades_' + normTxt(s.titulo).replace(/[^a-z0-9]+/g, '-').slice(0, 40) + '_' + dataArquivo() + '.xlsx', [{ nome: s.titulo.slice(0, 31), cab: s.cab, linhas: linhas.map(o => s.cab.map(c => o[c] || '')) }]); }));
+  box.querySelectorAll('tr[data-num]').forEach(tr => tr.addEventListener('click', () => { const p = base.processos.find(x => x.numero === tr.dataset.num); if (p) fichaProcesso(base, p); }));
+}
+
+/* ---------- Plano de ação ---------- */
+function prazoVencido(o) { const d = parseDataBR(o['Prazo']); return d && d < hojeZerado() && normTxt(o['Status']) !== 'concluido'; }
+function planoFiltrado(base, procs) {
+  const nums = new Set(procs.map(p => p.numero));
+  let l = base.plano.itens.filter(o => !filtroAtivo() || nums.has(o['Número do processo (CNJ)']));
+  const f = FILTRO.plano || 'abertos';
+  if (f === 'abertos') l = l.filter(o => normTxt(o['Status']) !== 'concluido');
+  else if (f === 'urgentes') l = l.filter(o => normTxt(o['Prioridade']) === 'urgente' && normTxt(o['Status']) !== 'concluido');
+  else if (f === 'vencidos') l = l.filter(prazoVencido);
+  else if (f === 'concluidos') l = l.filter(o => normTxt(o['Status']) === 'concluido');
+  const ordem = { urgente: 0, alta: 1, media: 2, baixa: 3 };
+  return l.sort((a, b) => (ordem[normTxt(a['Prioridade'])] ?? 9) - (ordem[normTxt(b['Prioridade'])] ?? 9) || ((parseDataBR(a['Prazo']) || 0) - (parseDataBR(b['Prazo']) || 0)));
+}
+function renderPlano(base, procs) {
+  const l = planoFiltrado(base, procs);
+  const nums = new Set(procs.map(p => p.numero));
+  const todos = base.plano.itens.filter(o => !filtroAtivo() || nums.has(o['Número do processo (CNJ)']));
+  const cont = { abertos: todos.filter(o => normTxt(o['Status']) !== 'concluido').length, urgentes: todos.filter(o => normTxt(o['Prioridade']) === 'urgente' && normTxt(o['Status']) !== 'concluido').length,
+    vencidos: todos.filter(prazoVencido).length, concluidos: todos.filter(o => normTxt(o['Status']) === 'concluido').length, todos: todos.length };
+  document.querySelectorAll('#filtrosPlano .chip').forEach(c => { const n = cont[c.dataset.plano]; c.innerHTML = esc(c.dataset.rotulo) + (n !== undefined ? ' <span class="sub">(' + n + ')</span>' : ''); c.classList.toggle('ativo', (FILTRO.plano || 'abertos') === c.dataset.plano); });
+  const cab = ['Prioridade', 'Prazo', 'Número do processo (CNJ)', 'Cliente', 'Tipo de ato', 'Descrição do ato / pedido', 'Fundamento (tese/precedente)', 'Responsável', 'Status'];
+  document.getElementById('corpoPlano').innerHTML = l.map(o => '<tr class="clicavel' + (prazoVencido(o) ? ' vencido' : '') + '" data-num="' + esc(o['Número do processo (CNJ)']) + '">' +
+    cab.map(c => '<td class="' + (c === 'Prioridade' ? 'prio-' + normTxt(o[c]).replace(/\s+/g, '') : '') + '">' + (c === 'Número do processo (CNJ)' ? '<span class="mono">' + esc(o[c]) + '</span>' : esc(o[c] || '')) + '</td>').join('') + '</tr>').join('') ||
+    '<tr><td colspan="9" class="obs-vazio">Nenhum ato neste recorte.</td></tr>';
+  document.getElementById('cabPlano').innerHTML = cab.map(c => '<th>' + esc(c.replace('Número do processo (CNJ)', 'Processo').replace('Descrição do ato / pedido', 'Ato / pedido').replace('Fundamento (tese/precedente)', 'Fundamento')) + '</th>').join('');
+  document.getElementById('subPlano').innerHTML = '<b>' + l.length + '</b> atos · ' + cont.urgentes + ' urgentes abertos · <span class="' + (cont.vencidos ? 'val-neg' : '') + '">' + cont.vencidos + ' com prazo vencido</span> · ' + cont.concluidos + ' concluídos';
+  document.querySelectorAll('#corpoPlano tr[data-num]').forEach(tr => tr.addEventListener('click', () => { const p = base.processos.find(x => x.numero === tr.dataset.num); if (p) fichaProcesso(base, p); }));
+}
+
+/* ---------- Aguardando (opcional) ---------- */
+function renderAguardando(base, procs) {
+  const sec = document.getElementById('secAguardando');
+  if (!base.aguardando.itens.length) { sec.classList.add('oculto'); return; }
+  sec.classList.remove('oculto');
+  const nums = new Set(procs.map(p => p.numero));
+  const l = base.aguardando.itens.filter(o => !filtroAtivo() || nums.has(o['Número do processo (CNJ)']));
+  const cab = base.aguardando.cab.filter(c => !/^(ID|Origem)$/i.test(c));
+  document.getElementById('cabAguardando').innerHTML = cab.map(c => '<th>' + esc(c.replace('Número do processo (CNJ)', 'Processo')) + '</th>').join('');
+  document.getElementById('corpoAguardando').innerHTML = l.map(o => '<tr class="clicavel" data-num="' + esc(o['Número do processo (CNJ)']) + '">' + cab.map(c => '<td class="' + (c === 'Prioridade' ? 'prio-' + normTxt(o[c]).replace(/\s+/g, '') : '') + '">' + (c === 'Número do processo (CNJ)' ? '<span class="mono">' + esc(o[c]) + '</span>' : esc(o[c] || '')) + '</td>').join('') + '</tr>').join('') ||
+    '<tr><td colspan="' + cab.length + '" class="obs-vazio">Nada aguardando neste recorte.</td></tr>';
+  document.getElementById('subAguardando').innerHTML = '<b>' + l.length + '</b> atos que dependem de um evento (gatilho)';
+  const b = document.getElementById('btnXlsxAguardando'); b.onclick = () => xlsxDe('aguardando_' + dataArquivo() + '.xlsx', [{ nome: 'Aguardando', cab, linhas: l.map(o => cab.map(c => o[c] || '')) }]);
+  document.querySelectorAll('#corpoAguardando tr[data-num]').forEach(tr => tr.addEventListener('click', () => { const p = base.processos.find(x => x.numero === tr.dataset.num); if (p) fichaProcesso(base, p); }));
+}
+
+/* ---------- Carteira (resumo por processo) ---------- */
+function colunasCarteira(base) {
+  const nomes = PAINEL_CFG.carteira.map(n => [].concat(n)).map(alts => alts.map(a => base.col(a)).find(i => i >= 0)).filter(i => i !== undefined && i >= 0);
+  return nomes;
+}
+function renderCarteira(base, procs) {
+  const cols = colunasCarteira(base);
+  document.getElementById('cabCarteira').innerHTML = '<th>Processo</th><th>Cliente</th>' + cols.map(i => '<th>' + esc(base.cab[i].replace('Análise de probabilidade de sucesso (%)', 'Probab.').replace(/ \(R\$\)/, '')) + '</th>').join('');
+  document.getElementById('corpoCarteira').innerHTML = procs.map(p => '<tr class="clicavel" data-linha="' + p.linha + '"><td><span class="mono">' + esc(p.numero) + '</span></td><td>' + esc(p.cliente) + '</td>' +
+    cols.map(i => '<td>' + esconderVazio(String(p.f[i] ?? '').trim().slice(0, 90)) + '</td>').join('') + '</tr>').join('') || '<tr><td colspan="' + (cols.length + 2) + '" class="obs-vazio">Nenhum processo no recorte.</td></tr>';
+  document.getElementById('subCarteira').innerHTML = '<b>' + procs.length + '</b> processos · clique para abrir a ficha completa (todas as colunas da auditoria)';
+  document.querySelectorAll('#corpoCarteira tr[data-linha]').forEach(tr => tr.addEventListener('click', () => { const p = base.processos.find(x => x.linha === Number(tr.dataset.linha)); if (p) fichaProcesso(base, p); }));
+}
+function exportarCarteira(base, procs) {
+  const cab = base.cab.map((h, i) => h || letraCol(i));
+  xlsxDe('carteira-auditoria_' + dataArquivo() + '.xlsx', [{ nome: 'Auditoria (recorte)', cab, linhas: procs.map(p => cab.map((h, i) => p.f[i] ?? '')) }]);
+}
+
+/* ---------- gráficos ---------- */
+function contar(procs, i) { const c = {}; procs.forEach(p => { const v = String(p.f[i] || '').trim() || '(vazio)'; c[v] = (c[v] || 0) + 1; }); return c; }
+function renderGraficos(base, procs) {
+  const iFase = base.col('Fase atual', 'F'), iProb = base.col('Análise de probabilidade de sucesso (%)'), iEsp = base.col('Total esperado para o escritório (R$)');
+  destruir('grafFase'); destruir('grafEntidade');
+  const fases = topN(contar(procs, iFase), 9, 'Outras');
+  graficos.grafFase = new Chart(document.getElementById('grafFase'), { type: 'bar', data: { labels: fases.map(x => x[0]), datasets: [{ label: 'Processos', data: fases.map(x => x[1]), backgroundColor: hexA(COR_AZUL, .6), borderColor: COR_AZUL, borderWidth: 1 }] },
+    options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true, grid: { color: COR_BORDA } }, y: { grid: { display: false }, ticks: { font: { size: 10 } } } } } });
+  const porEnt = {}; procs.forEach(p => { const e = p.entidade || '(vazio)'; porEnt[e] = porEnt[e] || { n: 0, prob: [], esp: 0 }; porEnt[e].n++;
+    const pr = iProb >= 0 ? parseNumBR(p.f[iProb]) : NaN; if (isFinite(pr) && String(p.f[iProb] || '').trim()) porEnt[e].prob.push(pr); if (iEsp >= 0) porEnt[e].esp += parseNumBR(p.f[iEsp]); });
+  const ents = Object.entries(porEnt).sort((a, b) => b[1].n - a[1].n).slice(0, 10);
+  graficos.grafEntidade = new Chart(document.getElementById('grafEntidade'), { type: 'bar', data: { labels: ents.map(x => x[0]), datasets: [
+      { label: 'Processos', data: ents.map(x => x[1].n), backgroundColor: hexA(COR_AZUL, .6), borderColor: COR_AZUL, borderWidth: 1, yAxisID: 'y' },
+      { label: 'Probabilidade média (%)', data: ents.map(x => x[1].prob.length ? Math.round(x[1].prob.reduce((s, v) => s + v, 0) / x[1].prob.length) : null), type: 'line', borderColor: COR_AMARELO, backgroundColor: COR_AMARELO, yAxisID: 'y2', tension: .25 }] },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } }, scales: { y: { beginAtZero: true, grid: { color: COR_BORDA } }, y2: { position: 'right', min: 0, max: 100, grid: { display: false } }, x: { grid: { display: false }, ticks: { font: { size: 10 } } } } } });
+}
+
+/* ---------- pontos de atenção ---------- */
+function renderObs(base, painel, procs) {
+  const obs = [];
+  const todosK = painel.flatMap(s => s.kpis);
+  const acionaveis = todosK.filter(k => /^(→|->)/.test(k.acao) && Number(k.v) > 0 && !k.moeda && !k.pct).sort((a, b) => Number(b.v) - Number(a.v)).slice(0, 5);
+  acionaveis.forEach(k => obs.push(obsCard(/urgente|vencido|prescri/i.test(k.rotulo) ? 'critico' : 'atencao', '&#9654;', esc(k.rotulo) + ': ' + formatarKpi(k), 'Ação: <b>' + esc(k.acao) + '</b> — clique no cartão para a lista de processos.')));
+  const vencidos = planoFiltrado(base, procs).filter(prazoVencido);
+  const nums = new Set(procs.map(p => p.numero));
+  const venc = base.plano.itens.filter(o => (!filtroAtivo() || nums.has(o['Número do processo (CNJ)'])) && prazoVencido(o));
+  if (venc.length) obs.push(obsCard('critico', '&#9203;', venc.length + ' atos do plano com prazo vencido', venc.slice(0, 4).map(o => esc(o['Cliente'] || '') + ' — ' + esc((o['Descrição do ato / pedido'] || '').slice(0, 80)) + ' (' + esc(o['Prazo']) + ')').join('<br>') + (venc.length > 4 ? '<br>…' : '')));
+  const naoRepro = todosK.filter(k => k.erroCalc);
+  if (naoRepro.length) obs.push(obsCard('info', '&#8505;', naoRepro.length + ' indicadores mostram o valor da própria planilha', 'As fórmulas de <i>' + naoRepro.map(k => esc(k.rotulo)).join('</i>, <i>') + '</i> não foram reproduzidas (' + esc(naoRepro[0].erroCalc) + '); por isso não abrem lista nem respeitam o filtro.'));
+  const divergentes = todosK.filter(k => !k.erroCalc && !filtroAtivo() && k.valorPlanilha && formatarKpi(k).replace(/\s/g, '') !== k.valorPlanilha.replace(/\s/g, '') && !k.pct && !k.moeda);
+  if (divergentes.length) obs.push(obsCard('atencao', '&#8646;', 'Valores diferentes da aba Painel em ' + divergentes.length + ' indicadores', divergentes.slice(0, 5).map(k => esc(k.rotulo) + ': painel <b>' + formatarKpi(k) + '</b> × planilha <b>' + esc(k.valorPlanilha) + '</b>').join('<br>') + '<br><span class="sub">Normalmente é cache da planilha ou linha sem número de processo; a lista do cartão mostra exatamente o que foi contado.</span>'));
+  if (!obs.length) obs.push('<div class="obs-vazio">Nada a apontar neste recorte.</div>');
+  document.getElementById('obsLista').innerHTML = obs.join('');
+}
+
+/* ---------- exportações gerais ---------- */
+function exportarPainelCsv(base) {
+  const c = DADOS_CALC || { painel: calcularPainel(base, ativos(base)) };
+  const linhas = []; c.painel.forEach(s => s.kpis.forEach(k => linhas.push([s.titulo, k.rotulo, formatarKpi(k), k.acao, k.formula])));
+  baixarArquivo('painel_' + dataArquivo() + '.csv', csvDe(['Seção', 'Indicador', 'Valor' + (filtroAtivo() ? ' (recorte)' : ''), 'Ação recomendada', 'Fórmula'], linhas), 'text/csv;charset=utf-8');
+}
+function exportarRelatorio(base) {
+  const procs = ativos(base), c = DADOS_CALC || { painel: calcularPainel(base, procs) };
+  const abas = [];
+  const kp = []; c.painel.forEach(s => s.kpis.forEach(k => kp.push([s.titulo, k.rotulo, formatarKpi(k), k.acao, k.rows.size ? procs.filter(p => k.rows.has(p.linha)).map(p => p.numero).join(', ') : ''])));
+  abas.push({ nome: 'Painel', cab: ['Seção', 'Indicador', 'Valor', 'Ação recomendada', 'Processos que compõem o número'], linhas: kp });
+  const nums = new Set(procs.map(p => p.numero));
+  const det = []; base.detalhe.forEach(s => s.linhas.filter(o => !filtroAtivo() || nums.has(o['Processo (CNJ)'])).forEach(o => det.push([s.titulo].concat(s.cab.map(cc => o[cc] || '')))));
+  if (base.detalhe.length) abas.push({ nome: 'Prioridades', cab: ['Bloco'].concat(base.detalhe[0].cab), linhas: det });
+  const pl = base.plano.itens.filter(o => !filtroAtivo() || nums.has(o['Número do processo (CNJ)']));
+  abas.push({ nome: 'Plano de ação', cab: base.plano.cab.concat(['Prazo vencido?']), linhas: pl.map(o => base.plano.cab.map(cc => o[cc] || '').concat([prazoVencido(o) ? 'Sim' : ''])) });
+  if (base.aguardando.itens.length) { const ag = base.aguardando.itens.filter(o => !filtroAtivo() || nums.has(o['Número do processo (CNJ)'])); abas.push({ nome: 'Aguardando', cab: base.aguardando.cab, linhas: ag.map(o => base.aguardando.cab.map(cc => o[cc] || '')) }); }
+  const cab = base.cab.map((h, i) => h || letraCol(i));
+  abas.push({ nome: 'Auditoria (recorte)', cab, linhas: procs.map(p => cab.map((h, i) => p.f[i] ?? '')) });
+  xlsxDe('relatorio-auditoria-' + PAINEL_CFG.chave + '_' + dataArquivo() + '.xlsx', abas);
+}
+
+
+/* =========================================================================
+   CICLO / AUTENTICAÇÃO
+   ========================================================================= */
+let DADOS = null;
+
+/* Cada carga leva um número; ao voltar, só desenha se ainda for a mais
+   recente. Sem isso, uma carga antiga que termina depois reescreve a tela com
+   o recorte que o usuário já trocou — e quanto mais demorada a busca, mais
+   provável isso é. */
+let GERACAO_CARGA = 0;
+let ULTIMA_CONCLUIDA = 0;
+
+async function carregarDados() {
+  const erroEl = document.getElementById('erroBox');
+  const minhaGeracao = ++GERACAO_CARGA;
+  try {
+    const dados = await buscarTudo();
+    if (minhaGeracao !== GERACAO_CARGA) return;   // outra carga começou depois
+    DADOS = dados;
+    const idLink = CONFIG.SHEET_ID ||
+      (CONFIG.SHEETS ? Object.values(CONFIG.SHEETS)[0] : null);
+    const linkEl = document.getElementById('linkPlanilha');
+    if (idLink) linkEl.href = 'https://docs.google.com/spreadsheets/d/' + idLink + '/edit';
+    else linkEl.style.display = 'none';
+    document.getElementById('carregando').classList.add('oculto');
+    document.getElementById('conteudo').classList.remove('oculto');
+    erroEl.classList.add('oculto');
+    document.getElementById('atualizadoEm').textContent =
+      'Atualizado às ' + new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    render(DADOS);
+    ULTIMA_CONCLUIDA = minhaGeracao;
+  } catch (e) {
+    if (minhaGeracao !== GERACAO_CARGA) return;   // falha de carga já superada
+    console.error(e);
+    document.getElementById('carregando').classList.add('oculto');
+    erroEl.classList.remove('oculto');
+    erroEl.innerHTML = '<b>Não foi possível carregar a planilha.</b><br>' + e.message +
+      '<br>Verifique se a planilha continua compartilhada como <b>"qualquer pessoa com o link pode ver"</b>.' +
+      ' Nova tentativa automática em ' + CONFIG.AUTO_REFRESH_MIN + ' min.';
+  }
+}
+
+document.getElementById('btnAtualizar').addEventListener('click', carregarDados);
+/* Voltar para a aba não pode empilhar carga sobre carga em andamento: numa
+   busca longa isso multiplicava chamadas à fonte sem trazer nada de novo. */
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden || !DADOS) return;
+  if (GERACAO_CARGA !== ULTIMA_CONCLUIDA) return;   // ainda carregando
+  carregarDados();
+});
+setInterval(() => { if (DADOS) carregarDados(); }, CONFIG.AUTO_REFRESH_MIN * 60 * 1000);
+
+const CHAVE_SESSAO = 'dashboard-auditoria-bancario_sessao';
+
+function entrarNoPainel(segredo, guardar) {
+  // Copia tudo o que o cofre trouxer: um painel pode guardar uma planilha
+  // (SHEET_ID) ou várias (SHEETS), além da chave da API.
+  Object.assign(CONFIG, segredo);
+  if (guardar) { try { sessionStorage.setItem(CHAVE_SESSAO, JSON.stringify(segredo)); } catch (e) {} }
+  document.getElementById('loginOverlay').classList.add('oculto');
+  document.getElementById('cabecalho').classList.remove('oculto');
+  document.getElementById('carregando').classList.remove('oculto');
+  carregarDados();
+}
+
+document.getElementById('loginForm').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const btn = document.getElementById('btnEntrar');
+  const erroEl = document.getElementById('loginErro');
+  erroEl.classList.add('oculto');
+  btn.disabled = true; btn.textContent = 'Verificando…';
+  await new Promise(r => setTimeout(r, 30));
+  try {
+    const segredo = await abrirCofre(
+      document.getElementById('campoUsuario').value,
+      document.getElementById('campoSenha').value);
+    btn.textContent = 'Entrando…';
+    entrarNoPainel(segredo, true);
+  } catch (e) {
+    btn.disabled = false; btn.textContent = 'Entrar';
+    erroEl.classList.remove('oculto');
+    erroEl.textContent = 'Login ou senha sem acesso a este painel.';
+    document.getElementById('campoSenha').value = '';
+    document.getElementById('campoSenha').focus();
+  }
+});
+
+document.getElementById('btnSair').addEventListener('click', () => {
+  try { sessionStorage.removeItem(CHAVE_SESSAO); } catch (e) {}
+  location.reload();
+});
+
+(async function iniciar() {
+  let salvo = null;
+  try { salvo = sessionStorage.getItem(CHAVE_SESSAO); } catch (e) {}
+  if (salvo) { try { entrarNoPainel(JSON.parse(salvo), false); return; } catch (e) {} }
+  let cred = null;
+  try { cred = JSON.parse(sessionStorage.getItem('bm_portal_cred') || 'null'); } catch (e) {}
+  if (cred && cred.u != null && cred.s != null) {
+    try { entrarNoPainel(await abrirCofre(cred.u, cred.s), true); return; } catch (e) {}
+  }
+  document.getElementById('campoUsuario').focus();
+})();
+</script>
+</body>
+</html>
