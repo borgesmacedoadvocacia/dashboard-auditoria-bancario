@@ -1234,14 +1234,14 @@ async function lerOpcional(range, opt) { try { return (await lerAbasOpc([range],
 
 async function buscarTudo() {
   const [audF, painelF, detalhe, plano, resumo] = await lerAbasOpc([
-    ABA.auditoria + '!A1:EZ500', ABA.painel + '!A1:D120', ABA.detalhe + '!A1:H400', ABA.plano + '!A1:L600', ABA.resumo + '!A1:Z500']);
+    ABA.auditoria + '!A:EZ', ABA.painel + '!A:D', ABA.detalhe + '!A:H', ABA.plano + '!A:L', ABA.resumo + '!A:Z']);
   /* Painel em FORMULA (para reproduzir o calculo) e Auditoria em valores
      crus (numeros, percentuais como fracao e datas como serial) para as
      comparacoes numericas das formulas. */
   const [[painelFormula], [audU]] = await Promise.all([
-    lerAbasOpc([ABA.painel + '!A1:D120'], 'FORMULA'),
-    lerAbasOpc([ABA.auditoria + '!A3:EZ500'], 'UNFORMATTED_VALUE')]);
-  const aguardando = PAINEL_CFG.temAguardando ? await lerOpcional(ABA.aguardando + '!A1:L400') : [];
+    lerAbasOpc([ABA.painel + '!A:D'], 'FORMULA'),
+    lerAbasOpc([ABA.auditoria + '!A3:EZ'], 'UNFORMATTED_VALUE')]);
+  const aguardando = PAINEL_CFG.temAguardando ? await lerOpcional(ABA.aguardando + '!A:L') : [];
   return montarBase(audF, audU, painelF, painelFormula, detalhe, plano, resumo, aguardando);
 }
 
